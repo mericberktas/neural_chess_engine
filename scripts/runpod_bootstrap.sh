@@ -11,13 +11,22 @@
 #   3. SSH in, then run this script.
 #
 # Configurable via env vars (all optional, shown with defaults):
-#   REPO_URL, TRAIN_MONTH, TEST_MONTH, WORKDIR
+#   REPO_URL, TRAIN_MONTH, TEST_MONTH, WORKDIR, TRAIN_MAX_GAMES, TEST_MAX_GAMES
+#
+# TRAIN_MAX_GAMES/TEST_MAX_GAMES are load-bearing, not cosmetic: without a
+# cap, build_dataset.py streams the ENTIRE monthly dump (tens of millions of
+# games) since there's no way to stop early once you're past the "few
+# million positions" target -- observed live at ~500 games/sec, ~3% qualify,
+# that's many hours to days on a meter that's still running. The plan's own
+# target is "a few million positions", not "the whole month".
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/mericberktas/neural_chess_engine.git}"
 TRAIN_MONTH="${TRAIN_MONTH:-2026-08}"
 TEST_MONTH="${TEST_MONTH:-2026-04}"
 WORKDIR="${WORKDIR:-/workspace/neural_chess_engine}"
+TRAIN_MAX_GAMES="${TRAIN_MAX_GAMES:-40000}"   # ~2.3M positions at ~57 positions/game observed
+TEST_MAX_GAMES="${TEST_MAX_GAMES:-5000}"      # held-out eval set doesn't need to be huge
 
 echo "== clone =="
 git clone "$REPO_URL" "$WORKDIR"
@@ -41,12 +50,12 @@ rclone lsd gdrive: > /dev/null && echo "rclone OK, gdrive: remote reachable"
 echo "== training data (downloaded here, not on your local machine -- see docs/plans/01_Veri_Toplama_ve_Hazirlama.md) =="
 python src/build_dataset.py \
     --source "https://database.lichess.org/standard/lichess_db_standard_rated_${TRAIN_MONTH}.pgn.zst" \
-    --out-dir data/train_full --split train
+    --out-dir data/train_full --split train --max-games "$TRAIN_MAX_GAMES"
 
 echo "== held-out test month (time-disjoint from training, per Aşama 1) =="
 python src/build_dataset.py \
     --source "https://database.lichess.org/standard/lichess_db_standard_rated_${TEST_MONTH}.pgn.zst" \
-    --out-dir data/test_full --split test
+    --out-dir data/test_full --split test --max-games "$TEST_MAX_GAMES"
 
 echo ""
 echo "== setup done. Starting training in the background (survives SSH drop / your machine sleeping) =="
