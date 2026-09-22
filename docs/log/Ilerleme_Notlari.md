@@ -14,6 +14,12 @@ Format:
 
 ---
 
+## 2026-09-22 — Gerçek GPU koşusu öncesi hazırlık: shard-sampler düzeltmesi + RunPod bootstrap script'i
+
+- Aşama: Altyapı (Aşama 2'nin gerçek GPU koşusu için ön koşul; RunPod bakiyesine para yatırmadan önce)
+- Yapıldı: `src/train.py`'deki bilinen performans borcu kapatıldı — `ShardShuffledSampler` eklendi (shard sırasını karıştırır, shard içini karıştırır, ama shard'ları asla iç içe geçirmez), `train_loader` artık `shuffle=True` yerine bunu kullanıyor. `tests/test_train.py`: sampler'ın geçerli bir permütasyon ürettiğini ve shard'ları hiç interleave etmediğini doğruluyor (uydurma, boyutları eşit olmayan 3 shard'lı sahte veri seti ile). Ayrıca 6 shard'a bölünmüş gerçek bir toy veri seti (300 oyun, 17698 pozisyon) ile uçtan uca bir eğitim koşusu (300 step) çalıştırılıp crash olmadığı doğrulandı. `scripts/runpod_bootstrap.sh` eklendi: kiralık instance'ta çalıştırılacak, repo'yu clone'lar, bağımlılıkları (torch hariç) kurar, rclone'u kontrol eder, tam veri setini (train ayı + ayrı test ayı) instance'ta indirir, hazır bir `train.py` komut örneği ve checkpoint senkronizasyon/instance-destroy hatırlatması yazdırır — hiperparametreler bilinçli olarak gömülmedi.
+- Sıradaki adım/not: Hiperparametreler (batch size, model boyutu, disk boyutu) kullanıcıyla konuşulacak, sonra RunPod bakiyesine minimum 10$ yatırılıp gerçek pod açılacak.
+
 ## 2026-09-22 — GPU kiralama sağlayıcısı kararlaştırıldı: RunPod önce, Vast.ai yedek
 
 - Aşama: Altyapı (Aşama 2'nin gerçek GPU koşusu için ön koşul)

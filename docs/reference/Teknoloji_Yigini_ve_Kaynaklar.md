@@ -73,6 +73,8 @@ vastai create instance OFFER_ID --image pytorch/pytorch:2.4.0-cuda12.4-cudnn9-ru
 
 İkisinde de instance ayağa kalkınca: `git clone` (repo public, token gerekmiyor) → `pip install -r requirements.txt` (torch'u atla, image'da zaten CUDA-uyumlu kurulu) → `rclone.conf`'u `scp` ile taşı → veriyi instance'ta indir (lokale değil) → `train.py` çalıştır → checkpoint'i `rclone copy` ile Drive'a çek → instance'ı **destroy** et (sadece `stop` disk ücretini durdurmuyor).
 
+Bu adımların çoğu [scripts/runpod_bootstrap.sh](../../scripts/runpod_bootstrap.sh)'da otomatikleştirildi — instance'a SSH ile bağlanıp çalıştırmak yeterli (script içindeki başlık yorumunda önce yapılması gereken lokal `scp` adımı da yazıyor). Hiperparametreler bilinçli olarak script'e gömülmedi (henüz kararlaştırılmadı), script sadece hazır bir örnek komut yazdırıyor.
+
 ## Dağıtım
 
 - **[lichess-bot](https://github.com/lichess-bot-devs/lichess-bot)** — pip paketi değil, ayrı bir git clone; kendi `requirements.txt`'i var. `Homemade` motor sınıfı üzerinden UCI protokolü yazmadan entegre edilir.

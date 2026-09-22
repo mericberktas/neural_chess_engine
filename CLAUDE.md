@@ -14,6 +14,7 @@ Tek bir reyting bandına (2000-2200) odaklanan, arama yapmayan bir transformer p
 - `docs/log/Ilerleme_Notlari.md` — iş günlüğü, aşağıdaki kurala göre güncellenir.
 - `src/` — gerçek kod (encoding, veri pipeline, tablebase, ileride model/eğitim/deployment).
 - `tests/` — assert-bazlı, framework'süz self-check'ler (`python tests/test_x.py`), her non-trivial modülün bir tanesi olmalı.
+- `scripts/` — kiralık GPU instance'ı gibi operasyonel/dağıtım script'leri (proje motorunun kendi kodu değil).
 - `requirements.txt`, `.venv/` (gitignore'lu) — bkz. Teknoloji Yığını dosyası.
 
 Yeni bir plan/karar dokümanı gerekiyorsa `docs/` altında konusuna uygun bir klasöre (plans/, reference/, log/ veya yeni bir klasöre) eklenir — kök dizine md dosyası atılmaz, CLAUDE.md ve oturumlar arası devir notu olan `HANDOFF.md` (varsa, geçici) hariç.

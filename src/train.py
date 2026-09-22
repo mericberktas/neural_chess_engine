@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.tensorboard import SummaryWriter
 
 from model import ChessTransformer
@@ -30,11 +30,9 @@ class ShardDataset(Dataset):
     """Indexes a directory of shard_*.npz files as one flat dataset.
 
     Keeps only the current shard's arrays in memory, so this scales past
-    what fits in RAM as long as one shard does. With DataLoader(shuffle=True)
-    this means shard reloads on almost every __getitem__ (global random
-    access), which is fine for a toy/correctness run but slow at real scale.
-    # ponytail: no shard-aware sampler; add one (shuffle shard order, keep
-    # items within a shard together) if training throughput matters on a GPU.
+    what fits in RAM as long as one shard does. Pair with ShardShuffledSampler
+    (not plain shuffle=True) or every __getitem__ can reload a different
+    shard from disk -- see ShardShuffledSampler's docstring.
     """
 
     def __init__(self, shard_dir: Path):
@@ -67,6 +65,30 @@ class ShardDataset(Dataset):
         board = self._cache_boards[local_idx].astype(np.float32)
         move = self._cache_moves[local_idx].astype(np.int64)
         return torch.from_numpy(board), torch.from_numpy(move)
+
+
+class ShardShuffledSampler(Sampler):
+    """Shuffles shard order each epoch, and shuffles within each shard, but
+    never interleaves shards -- consecutive yielded indices stay in the same
+    shard until it's exhausted, so ShardDataset's single-shard cache stays
+    warm instead of reloading a different file from disk on every item.
+    Plain DataLoader(shuffle=True) does global random access and defeats
+    the cache -- fine at toy scale, but disk-bound (and GPU-idle, which you
+    pay for) at real scale.
+    """
+
+    def __init__(self, dataset: ShardDataset):
+        self.dataset = dataset
+
+    def __iter__(self):
+        rng = np.random.default_rng()
+        for shard_idx in rng.permutation(len(self.dataset.files)):
+            start, end = self.dataset._offsets[shard_idx], self.dataset._offsets[shard_idx + 1]
+            for local_idx in rng.permutation(end - start):
+                yield int(start + local_idx)
+
+    def __len__(self) -> int:
+        return len(self.dataset)
 
 
 @torch.no_grad()
@@ -130,7 +152,7 @@ def main() -> None:
 
     train_ds = ShardDataset(args.train_dir)
     val_ds = ShardDataset(args.val_dir)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=ShardShuffledSampler(train_ds), num_workers=args.num_workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     print(f"train positions: {len(train_ds)}, val positions: {len(val_ds)}", file=sys.stderr)
 
