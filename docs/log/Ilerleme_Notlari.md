@@ -14,6 +14,12 @@ Format:
 
 ---
 
+## 2026-09-22 — GPU kiralama sağlayıcısı kararlaştırıldı: RunPod önce, Vast.ai yedek
+
+- Aşama: Altyapı (Aşama 2'nin gerçek GPU koşusu için ön koşul)
+- Yapıldı: Vast.ai/RunPod dışında alternatifler araştırıldı (TensorDock, SaladCloud, Lambda Labs, Paperspace) ve karşılaştırma `docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md`'ye eklendi. Karar: **önce RunPod** (yeni hesaba $10 ücretsiz kredi, daha tutarlı ortam) denenecek, kredi biter/yetmezse **Vast.ai**'ye (daha ucuz, pazar yeri) geçilecek — ikisi de aynı SSH+git+pip iş akışını kullanıyor, geçiş maliyeti yok. Kullanıcının bulduğu "$0.27/sa, 1 Month" gibi tekliflerin rezervasyon taahhüdü mü yoksa esnek saatlik mi olduğuna dikkat edilmesi gerektiği not edildi (bütçemiz ~10-20$, aylık taahhüde uygun değil).
+- Sıradaki adım/not: RunPod hesabı açılıp $10 kredi ile ilk gerçek-GPU (CUDA) doğrulama koşusu yapılabilir — `tests/test_model.py` + küçük bir toy `train.py` koşusu, gerçek eğitimden önce CUDA path'inin hiç test edilmediği (sadece CPU'da doğrulandı) biliniyor.
+
 ## 2026-09-22 — Checkpoint yedekleme için Google Drive (rclone) kuruldu
 
 - Aşama: Altyapı (Aşama 2'nin gerçek GPU koşusu için ön koşul)

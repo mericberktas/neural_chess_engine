@@ -41,6 +41,38 @@ Kiralık GPU instance'ı silinince (`vastai destroy instance`) diskteki her şey
 - Kullanım: `rclone copy checkpoints/toy/best.pt gdrive:chess_bot/checkpoints/` (kiralık instance'tan da aynı komut, rclone.conf'u oraya kopyalayarak).
 - Kota: günlük 750GB upload limiti var, bizim kullanım (checkpoint'ler + gerekirse veri shard'ları) bunun çok altında.
 
+## GPU Kiralama (Tam Ölçekli Eğitim)
+
+**Karar: önce RunPod, gerekirse Vast.ai'ye geç.** Gerekçe: RunPod yeni hesaba $10 ücretsiz kredi veriyor — bu, ilk gerçek-GPU/CUDA doğrulama koşumuzu (toy ölçekte, tam eğitimden önce) neredeyse bedavaya yaptırıyor. RunPod'un Secure Cloud katmanı host'a göre değişen kalite riskini de azaltıyor (vast.ai bir pazar yeri, host'tan host'a ortam/güvenilirlik değişebiliyor). Vast.ai daha ucuz (~%30-50) ama biz henüz oraya özel bir kurulum yapmadık, hesap açma maliyeti de yok — kredi biter veya daha fazla saate ihtiyaç duyarsak oraya geçmek kolay, ikisi de aynı iş akışını (SSH + `git clone` + `pip install` + `train.py`) kullanıyor.
+
+| Sağlayıcı | RTX 4090/5090 fiyat | Not |
+| --- | --- | --- |
+| **RunPod** (ilk tercih) | 4090: $0.34-0.69/sa | Yeni hesaba $10 kredi, saniye bazlı fatura, %99 uptime (Secure Cloud) |
+| **Vast.ai** (yedek/ucuz) | 4090: $0.09-0.59/sa, 5090: ~$0.53/sa medyan | En ucuz genelde, açık artırma pazarı, spot 15sn önceden haberle geri alınabilir |
+| TensorDock | vast.ai'ye yakın | Az bilinen, benzer marketplace modeli |
+| SaladCloud | 3090: $0.10/sa, 4090: $0.19/sa'dan başlıyor | En ucuz uçlardan biri, dağıtık tüketici-GPU ağı — ortam tutarlılığı değişken olabilir |
+| Lambda Labs | A100/H100 odaklı, $2+/sa | Bizim küçük model için gereksiz büyük/pahalı |
+
+**Dikkat:** "aylık" görünen bazı teklifler (örn. "$0.27/sa, 1 Month") aslında bir **rezervasyon taahhüdü** olabilir (kullanmasan da tüm ayı ödersin) — kiralamadan önce "on-demand/saatlik, istediğin an durdur/sil" mi yoksa "reserved" mı olduğunu kontrol et. Bizim bütçemiz (~10-20$) bir ay süren taahhüde değil, birkaç saatlik/günlük kullanıma göre.
+
+**Kurulum (her ikisi de benzer, pip ile CLI):**
+
+RunPod:
+```bash
+pip install runpod          # Python SDK
+# CLI (runpodctl) için: docs.runpod.io/runpodctl/overview
+```
+
+Vast.ai:
+```bash
+pip install vastai
+vastai set api-key YOUR_API_KEY
+vastai search offers 'gpu_name=RTX_4090 num_gpus=1 verified=true rentable=true' -o 'dlperf_usd-'
+vastai create instance OFFER_ID --image pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime --disk 60 --ssh --direct
+```
+
+İkisinde de instance ayağa kalkınca: `git clone` (repo public, token gerekmiyor) → `pip install -r requirements.txt` (torch'u atla, image'da zaten CUDA-uyumlu kurulu) → `rclone.conf`'u `scp` ile taşı → veriyi instance'ta indir (lokale değil) → `train.py` çalıştır → checkpoint'i `rclone copy` ile Drive'a çek → instance'ı **destroy** et (sadece `stop` disk ücretini durdurmuyor).
+
 ## Dağıtım
 
 - **[lichess-bot](https://github.com/lichess-bot-devs/lichess-bot)** — pip paketi değil, ayrı bir git clone; kendi `requirements.txt`'i var. `Homemade` motor sınıfı üzerinden UCI protokolü yazmadan entegre edilir.
@@ -63,7 +95,7 @@ Notebook hücrelerine mantık kodu yazılmıyor — git diff alınamıyor, test 
 | Lichess oyun verisi | [database.lichess.org/standard/](https://database.lichess.org/standard/) | Aylık `.pgn.zst` dökümleri |
 | Syzygy tablebase (birincil) | [tablebase.lichess.ovh/tables/standard/{3,4,5}-{wdl,dtz}/](https://tablebase.lichess.ovh/) | 3-5 taşlı WDL/DTZ dosyaları, Lichess'in kendi mirror'ı — daha hızlı |
 | Syzygy tablebase (yedek) | [tablebase.sesse.net/syzygy/3-4-5/](http://tablebase.sesse.net/) | Aynı dosyalar, birincil kaynak yavaş/erişilemezse |
-| GPU kiralama (tam ölçek) | [vast.ai](https://vast.ai/), [runpod.io](https://runpod.io/) | RTX 4090, hazır PyTorch docker image'ıyla ortam kurmadan başla |
+| GPU kiralama (tam ölçek) | [runpod.io](https://runpod.io/) (ilk tercih), [vast.ai](https://vast.ai/) (ucuz yedek) | Hazır PyTorch docker image'ıyla ortam kurmadan başla — bkz. "GPU Kiralama" bölümü |
 | GPU (ücretsiz prototipleme) | [kaggle.com/code](https://www.kaggle.com/code) | Haftalık ~30 saat P100/dual-T4, Colab'a göre daha öngörülebilir kota |
 | lichess-bot referans kodu | [github.com/lichess-bot-devs/lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) | Dağıtım entegrasyonu |
 | python-chess dokümantasyonu | [python-chess.readthedocs.io](https://python-chess.readthedocs.io/) | API referansı |
