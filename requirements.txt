@@ -1,0 +1,5 @@
+torch
+chess
+zstandard
+numpy
+tensorboard
