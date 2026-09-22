@@ -14,6 +14,13 @@ Format:
 
 ---
 
+## 2026-09-22 — İlk gerçek GPU eğitim koşusu tamamlandı, pod kapatıldı
+
+- Aşama: Aşama 2 — Model Mimarisi ve Eğitim (ilk gerçek koşu) + Aşama 1'in tam ölçekli ilk kullanımı
+- Yapıldı: RunPod'da (RTX 4090, Secure Cloud, $0.74/sa) gerçek bir eğitim koşusu yapıldı. Veri: 2026-08'den 40.000 oyun / 2.306.540 pozisyon (train+val), 2026-04'ten 5.000 oyun / 284.730 pozisyon (zaman-bazlı ayrık test seti) — yeni hızlandırılmış `build_dataset.py` ile ikisi de birkaç dakikada toplandı. Eğitim: batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, 1 epoch, 8827 step, ~6 dakika sürdü. GPU kullanımı %95, VRAM sadece 2.8GB/24GB (model küçük — kullanıcı bunun lokal RTX 3050 4GB'a da VRAM olarak sığabileceğini, sadece çok daha yavaş olacağını gözlemledi, doğru bir tespit). Val top-1/top-3 her checkpoint'te düzenli arttı: step 2000 %18.0/%30.0, 4000 %24.9/%39.5, 6000 %30.0/%44.3, 8000 (final/best) **%32.9/%47.1**. Her checkpoint otomatik olarak `gdrive:chess_bot/checkpoints/run1/best.pt`'e senkronize oldu, lokalden `rclone lsl` ile doğrulandı (19.067.761 byte). Checkpoint doğrulanınca pod `terminate_pod` ile kapatıldı, `get_pods()` boş liste döndürdü (faturalama durdu).
+- Operasyonel notlar (gelecek koşular için): (1) İlk pod denemesi yanlışlıkla Community yerine Secure Cloud'a düştü ve SSH public key/port ayarını unuttum, pod silinip doğru ayarlarla yeniden oluşturuldu — bkz. sohbet geçmişi. (2) İlk veri çekme denemesi `--max-games` sınırı olmadan başlatılmıştı (ayrı log kaydında düzeltildi). (3) Eski (hızlandırma öncesi) kodla başlamış bir veri koşusu %72'sindeyken durdurulup yeni kodla sıfırdan başlatıldı — yeni kod sıfırdan bile daha hızlı bitirdi. (4) `nohup ... &` ile başlatılan SSH komutları lokal tool'da "hanging/timeout" gibi görünüyor ama uzaktaki process düzgün detach oluyor — bu normal, ayrı bir SSH bağlantısıyla kontrol etmek yeterli.
+- Sonuç: %32.9 top-1, Chessformer/Maia-3'ün %57.1 hedefinin altında ama plan zaten bunu aspirasyonel işaretlemişti — tek epoch, 2.3M pozisyon, küçük modelle bu ölçekte makul bir ilk sonuç. Daha fazla veri/epoch ile ikinci bir koşu düşünülebilir (veri çekme artık çok ucuz), ama şimdilik kullanıcıyla sonraki adım konuşulacak.
+
 ## 2026-09-22 — build_dataset.py ~10x hızlandırıldı (header ön-filtre + multiprocessing)
 
 - Aşama: Altyapı (gelecekteki veri koşuları için — mevcut canlı RunPod koşusu bu değişiklikten etkilenmedi, ayrı bir kod snapshot'ı zaten çalışıyordu)
