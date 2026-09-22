@@ -63,6 +63,19 @@ def test_two_epochs_give_different_orders():
         assert order1 != order2
 
 
+def test_shard_dataset_combines_multiple_directories():
+    with tempfile.TemporaryDirectory() as tmp:
+        dir_a, dir_b = Path(tmp) / "a", Path(tmp) / "b"
+        _make_shards(dir_a)  # 5+7+3 = 15 items
+        _make_shards(dir_b)  # another 15, independently numbered shard_00000..02
+        combined = ShardDataset([dir_a, dir_b])
+        assert len(combined) == 2 * sum(SHARD_SIZES)
+        assert len(combined.files) == 6  # 3 shards from each dir, no collision
+
+        single = ShardDataset(dir_a)  # a bare Path still works, not just a list
+        assert len(single) == sum(SHARD_SIZES)
+
+
 def test_save_checkpoint_survives_missing_rclone():
     # drive_remote set but rclone isn't necessarily on PATH in a test env --
     # save_checkpoint must not raise either way (missing binary, or a real
@@ -80,5 +93,6 @@ def test_save_checkpoint_survives_missing_rclone():
 if __name__ == "__main__":
     test_sampler_is_a_valid_permutation_and_never_interleaves_shards()
     test_two_epochs_give_different_orders()
+    test_shard_dataset_combines_multiple_directories()
     test_save_checkpoint_survives_missing_rclone()
     print("OK - all train checks passed")

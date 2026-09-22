@@ -14,6 +14,14 @@ Format:
 
 ---
 
+## 2026-09-22 — Gece boyu insansız ikinci koşu için altyapı: early stopping, çoklu ay birleştirme, öz-kapanan pod
+
+- Aşama: Aşama 2 (ikinci, daha büyük eğitim koşusu — kullanıcı gece boyu izleyemeyecek, PC'sini de açık bırakmayacak, yani hem benim yerel oturumum hem kullanıcı erişilemez olacak)
+- Yapıldı: `src/train.py`'ye `--patience` eklendi (N ardışık iyileşmeyen val kontrolünden sonra otomatik durur — sahte donuk bir modelle (lr=0) gerçekten tetiklendiği doğrulandı). `ShardDataset` artık birden fazla dizini (`--train-dir`/`--val-dir` artık `nargs="+"`) tek bir veri setine birleştirebiliyor — her ayın `build_dataset.py` koşusu kendi shard numaralandırmasını sıfırdan başlattığı için tek bir klasöre yazsalardı çakışırlardı, ayrı klasörler + birleştirme ile çözüldü, gerçek iki-ay smoke testiyle doğrulandı. `tests/test_train.py`'ye ikisi için de test eklendi.
+- Güvenlik kararı: pod'un kendi kendini kapatabilmesi için üzerinde bir RunPod API key olması gerekiyor — kullanıcının hesap-geneli ana key'i yerine, kullanıcı **Restricted (sadece Pods read/write, billing/account erişimi yok)** yeni bir key oluşturdu, sadece bu remote'a konuldu. Ana key hep lokalde kaldı.
+- `scripts/runpod_overnight.sh` eklendi: 4 ay eğitim verisi (varsayılan 2026-08/07/06/05, her biri 40K oyun cap) + 1 ay test verisi (2026-04, 5K cap) çeker, `--patience 3 --epochs 15` ile early-stopping eğitim başlatır, bitince (ya da watchdog tetiklenince) kısıtlı key'i `/root/.runpod_key`'den okuyup `terminate_pod` çağırır. **İkinci, bağımsız güvenlik katmanı**: script başında arka planda bir "watchdog" başlıyor (`WATCHDOG_HOURS`, varsayılan 8 saat) — ana akış herhangi bir sebeple takılır/çökerse bile watchdog bağımsız olarak süresi dolunca pod'u siliyor, gece boyu kontrolsüz fatura birikmesini engelliyor. Script `set -e` kullanmıyor (bilinçli) — bir adım başarısız olsa bile script sonuna (self-terminate çağrısına) ulaşmaya devam etsin diye.
+- Sıradaki adım/not: Yeni bir pod açılıp bu script başlatılacak, kullanıcı uyumadan önce en az bir-iki checkpoint/senkronizasyonun gerçekten çalıştığı doğrulanacak.
+
 ## 2026-09-22 — İlk gerçek GPU eğitim koşusu tamamlandı, pod kapatıldı
 
 - Aşama: Aşama 2 — Model Mimarisi ve Eğitim (ilk gerçek koşu) + Aşama 1'in tam ölçekli ilk kullanımı

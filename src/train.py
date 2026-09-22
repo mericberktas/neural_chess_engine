@@ -32,7 +32,10 @@ MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout
 
 
 class ShardDataset(Dataset):
-    """Indexes a directory of shard_*.npz files as one flat dataset.
+    """Indexes shard_*.npz files from one or more directories as one flat
+    dataset (e.g. combining several months' worth of build_dataset.py runs --
+    each run numbers its own shards from 0, so collisions only matter within
+    a single directory, not across separate ones).
 
     Keeps only the current shard's arrays in memory, so this scales past
     what fits in RAM as long as one shard does. Pair with ShardShuffledSampler
@@ -40,10 +43,12 @@ class ShardDataset(Dataset):
     shard from disk -- see ShardShuffledSampler's docstring.
     """
 
-    def __init__(self, shard_dir: Path):
-        self.files = sorted(Path(shard_dir).glob("shard_*.npz"))
+    def __init__(self, shard_dirs: Path | list[Path]):
+        if isinstance(shard_dirs, (str, Path)):
+            shard_dirs = [shard_dirs]
+        self.files = sorted(f for d in shard_dirs for f in Path(d).glob("shard_*.npz"))
         if not self.files:
-            raise FileNotFoundError(f"no shard_*.npz files in {shard_dir}")
+            raise FileNotFoundError(f"no shard_*.npz files in {shard_dirs}")
         lengths = []
         for f in self.files:
             with np.load(f) as d:
@@ -146,8 +151,8 @@ def save_checkpoint(path: Path, model: nn.Module, args: argparse.Namespace, step
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--train-dir", required=True, type=Path)
-    parser.add_argument("--val-dir", required=True, type=Path)
+    parser.add_argument("--train-dir", required=True, type=Path, nargs="+", help="One or more directories of train shards (e.g. one per month)")
+    parser.add_argument("--val-dir", required=True, type=Path, nargs="+", help="One or more directories of val shards")
     parser.add_argument("--out-dir", type=Path, default=Path("checkpoints/run"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=None, help="Stop after this many steps regardless of epoch")
@@ -155,6 +160,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--val-interval", type=int, default=5000, help="Evaluate val every N steps")
+    parser.add_argument(
+        "--patience", type=int, default=None,
+        help="Stop early after this many consecutive val checks with no top-1 improvement (unset = disabled, run the full --epochs)",
+    )
     parser.add_argument("--val-batches", type=int, default=20, help="Batches per val evaluation (caps eval time)")
     parser.add_argument("--log-interval", type=int, default=50, help="Log train loss every N steps")
     parser.add_argument("--d-model", type=int, default=256)
@@ -190,6 +199,7 @@ def main() -> None:
     ckpt_path = args.out_dir / "best.pt"
 
     best_top1 = -1.0
+    checks_without_improvement = 0
     step = 0
     start = time.time()
     stop = False
@@ -217,8 +227,18 @@ def main() -> None:
                 print(f"step {step} val_top1 {top1:.4f} val_top3 {top3:.4f}", file=sys.stderr)
                 if top1 > best_top1:
                     best_top1 = top1
+                    checks_without_improvement = 0
                     save_checkpoint(ckpt_path, model, args, step, top1, top3)
                     print(f"  new best checkpoint -> {ckpt_path}", file=sys.stderr)
+                else:
+                    checks_without_improvement += 1
+                    if args.patience is not None and checks_without_improvement >= args.patience:
+                        print(
+                            f"  early stopping: no val_top1 improvement in {checks_without_improvement} checks",
+                            file=sys.stderr,
+                        )
+                        stop = True
+                        break
 
             if args.max_steps is not None and step >= args.max_steps:
                 stop = True
