@@ -14,6 +14,12 @@ Format:
 
 ---
 
+## 2026-09-22 — Aşama 4: Failsafe katmanı tamamlandı
+
+- Aşama: Aşama 4 — Failsafe Katmanı
+- Yapıldı: `src/failsafe.py` eklendi. `hangs_material(board, move)`: tek adımlık bir "SEE-lite" — hamleyi oynadıktan sonra varış karesi rakip tarafından tehdit ediliyor mu, savunmasız mı (ya da savunmalı ama rakibin en ucuz taşı bizimkinden değerli mi) bakıp net materyal değişimini (`bu hamlede alınan değer - kaybedilen taş değeri + savunmalıysa geri alınan rakip taşın değeri`) hesaplıyor; net negatifse bayrak kalkıyor. Sadece hamleyi yapan taşa bakıyor (plan metninde açıkça yeterli görülen kapsam), tam SEE/çok adımlı taktik yakalamıyor. `pick_safe_move(board, candidates)`: ANN'ın sıralı aday listesini (en olası önce) baştan tarayıp `hangs_material` ile geçen ilk hamleyi döndürüyor; dönüş `(move, rejected_count)` — `0` = üst aday zaten güvenliydi (tetiklenmedi), `>0` = o kadar üst sıradaki aday reddedildi (Aşama 5'te izlenebilir sayaç olarak kullanılabilir), `-1` = **hiçbir aday güvenli değildi**, hamle yapmamak seçenek olmadığından en üst aday yine de flag'lenerek döndürülüyor (bilinçli bir karar, kodda belgeli — insan gözden geçirsin). `tests/test_failsafe.py`: (1) bedavaya asılı kalan vezir hamlesi (savunmasız, sadece bir piyon tarafından tehdit edilen kareye gitmek) flag'leniyor ve filtre bir sonraki güvenli adaya düşüyor, (2) sıradan sessiz hamle ve eşit değerli at-at takası (savunmalı, rakip piyonla geri alınan) yanlış pozitif vermiyor, (3) meşru bir "fedakarlık" (vezir vezire karşı, savunmalı bir karede ama tam karşılığı alınan) aşırı muhafazakar davranılmadığını gösteriyor, (4) hiçbir adayın güvenli olmadığı uç durum `-1` bayrağıyla üst adaya düşüyor. `.venv` bu worktree'de sıfırdan kuruldu (`chess`+`numpy`, `torch`/`zstandard`/`requests` bu görev için gerekmedi). `.venv/Scripts/python.exe tests/test_failsafe.py` → `OK - all failsafe checks passed`.
+- Sıradaki adım/not: Aşama 4'ün üç checklist maddesi (statik kontrol, filtre, tetiklenme sayacı) tamam. Gerçek ANN çıktısına bağlanması (Aşama 6'nın işi) ve tetiklenme sıklığının canlı izlenmesi (Aşama 5) henüz yapılmadı — `pick_safe_move`'un `rejected_count` dönüşü bunun için hazır bir kanca. İnsan gözden geçirsin: "hiçbir aday güvenli değilse üst adayı yine de oyna" kararı (plan "hamle yapmamak seçenek değil" diye net bir yönlendirme vermiyor, mantıklı bir varsayım olarak seçildi).
+
 ## 2026-09-22 — Aşama 3: Tablebase entegrasyonu tamamlandı
 
 - Aşama: Aşama 3 — Tablebase Entegrasyonu
