@@ -4,6 +4,8 @@ data/
 *.pgn.zst
 checkpoints/
 *.pt
+*.rtbw
+*.rtbz
 __pycache__/
 *.pyc
 .venv/
