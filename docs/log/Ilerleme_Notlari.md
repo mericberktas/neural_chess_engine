@@ -14,6 +14,12 @@ Format:
 
 ---
 
+## 2026-09-22 — Otomatik Drive senkronizasyonu + arka planda eğitim (RunPod açılışı öncesi)
+
+- Aşama: Altyapı (Aşama 2, gerçek GPU koşusu — kullanıcı RunPod'a kredi yatırdı, hiperparametreler kesinleşti: batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, disk 80GB, RTX 4090 Community Cloud)
+- Yapıldı: Kullanıcı üç kritik soru sordu (checkpoint sıklığı, bilgisayar kapanınca eğitim devam eder mi, checkpoint'ler Drive'a otomatik gider mi) — üçüncüsü şu ana kadar **hayır**'dı, düzeltildi. `src/train.py`'ye `--drive-remote` flag'i eklendi: verilirse her yeni en-iyi checkpoint kaydedildiğinde otomatik `rclone copy` ile senkronize ediliyor. Bunu yazarken gerçek bir bug bulundu: `subprocess.run` eksik bir binary için (rclone PATH'te değilse) `FileNotFoundError` fırlatıyor, sadece exit code kontrolü bunu yakalamıyordu — `try/except OSError` eklendi, sync hatası eğitimi çökertmiyor artık, sadece uyarı loglanıp devam ediyor. `tests/test_train.py`'ye regresyon testi eklendi (rclone gerçekten PATH'te olmayan bu ortamda çalıştırıldı, hatayı gerçekten üretip doğru yakalandığını doğruladı). `scripts/runpod_bootstrap.sh` güncellendi: artık hiperparametreler gömülü, `nohup ... &` ile arka planda başlatıyor (SSH kopsa/laptop uyusa da eğitim devam eder), `--drive-remote gdrive:chess_bot/checkpoints/run1/` ile otomatik senkronizasyon açık.
+- Sıradaki adım/not: Kullanıcının onayıyla gerçek `create_pod` çağrısı yapılacak — bu, para harcayan ilk gerçek adım, açık onay bekleniyor.
+
 ## 2026-09-22 — Gerçek GPU koşusu öncesi hazırlık: shard-sampler düzeltmesi + RunPod bootstrap script'i
 
 - Aşama: Altyapı (Aşama 2'nin gerçek GPU koşusu için ön koşul; RunPod bakiyesine para yatırmadan önce)

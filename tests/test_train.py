@@ -1,14 +1,16 @@
-"""Assert-based self-check for src/train.py's ShardShuffledSampler.
-No framework: python tests/test_train.py
+"""Assert-based self-check for src/train.py's ShardShuffledSampler and the
+checkpoint drive-sync failure handling. No framework: python tests/test_train.py
 """
+import argparse
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
+import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from train import ShardDataset, ShardShuffledSampler
+from train import MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, save_checkpoint
 
 SHARD_SIZES = (5, 7, 3)  # deliberately uneven, and one tiny (size-3) shard
 
@@ -61,7 +63,22 @@ def test_two_epochs_give_different_orders():
         assert order1 != order2
 
 
+def test_save_checkpoint_survives_missing_rclone():
+    # drive_remote set but rclone isn't necessarily on PATH in a test env --
+    # save_checkpoint must not raise either way (missing binary, or a real
+    # rclone failing for some other reason). This is a regression test for a
+    # real bug: subprocess.run() raises FileNotFoundError for a missing
+    # executable, which isn't a nonzero-returncode case.
+    with tempfile.TemporaryDirectory() as tmp:
+        model = nn.Linear(4, 4)
+        args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:definitely/does/not/matter/")
+        path = Path(tmp) / "checkpoints" / "best.pt"
+        save_checkpoint(path, model, args, step=1, top1=0.0, top3=0.0)  # must not raise
+        assert path.exists()
+
+
 if __name__ == "__main__":
     test_sampler_is_a_valid_permutation_and_never_interleaves_shards()
     test_two_epochs_give_different_orders()
+    test_save_checkpoint_survives_missing_rclone()
     print("OK - all train checks passed")

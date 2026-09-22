@@ -9,8 +9,13 @@ Example (toy CPU smoke test):
     python src/train.py --train-dir data/toy/train --val-dir data/toy/val \\
         --out-dir checkpoints/toy --batch-size 32 --d-model 64 --nhead 4 \\
         --num-layers 2 --dim-feedforward 128 --val-interval 50 --max-steps 500
+
+Pass --drive-remote gdrive:chess_bot/checkpoints/run1/ to rclone-sync every
+new-best checkpoint off the instance as it's saved (requires rclone installed
+and configured -- see docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md).
 """
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -122,6 +127,21 @@ def save_checkpoint(path: Path, model: nn.Module, args: argparse.Namespace, step
         },
         path,
     )
+    if args.drive_remote:
+        # Sync every new-best checkpoint off the instance as it happens, so
+        # training survives an SSH drop / local machine going to sleep
+        # without losing progress if the instance itself dies. A sync
+        # failure (missing rclone binary, transient network blip, bad
+        # remote) must not kill training -- log it and move on, the next
+        # new-best checkpoint will retry.
+        try:
+            result = subprocess.run(["rclone", "copy", str(path), args.drive_remote], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"  WARNING: rclone sync failed ({result.returncode}): {result.stderr.strip()[:300]}", file=sys.stderr)
+            else:
+                print(f"  synced to {args.drive_remote}", file=sys.stderr)
+        except OSError as e:
+            print(f"  WARNING: rclone sync failed to start: {e}", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,6 +163,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dim-feedforward", type=int, default=1024)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--drive-remote", default=None,
+        help="If set (e.g. gdrive:chess_bot/checkpoints/run1/), rclone-copy every new-best checkpoint here as it's saved",
+    )
     return parser.parse_args()
 
 

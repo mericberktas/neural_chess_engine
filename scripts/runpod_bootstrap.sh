@@ -49,18 +49,16 @@ python src/build_dataset.py \
     --out-dir data/test_full --split test
 
 echo ""
-echo "== setup done. Hyperparameters aren't baked in here (decide those first) -- example run: =="
-cat <<'EOF'
-python src/train.py \
+echo "== setup done. Starting training in the background (survives SSH drop / your machine sleeping) =="
+echo "== every new-best checkpoint auto-syncs to gdrive:chess_bot/checkpoints/run1/ as it's saved =="
+nohup python src/train.py \
     --train-dir data/train_full/train --val-dir data/train_full/val \
     --out-dir checkpoints/run1 \
     --batch-size 256 --d-model 256 --nhead 8 --num-layers 6 --dim-feedforward 1024 \
-    --val-interval 2000 --epochs 1
-
-# periodically (or after training finishes), pull the checkpoint off the instance:
-rclone copy checkpoints/run1/best.pt gdrive:chess_bot/checkpoints/run1/
-
-# when done, DESTROY the pod from your LOCAL machine (stopping alone keeps billing storage):
-#   python -c "import runpod; runpod.api_key='...'; runpod.terminate_pod('POD_ID')"
-#   (or via the RunPod console)
-EOF
+    --val-interval 2000 --epochs 1 \
+    --drive-remote gdrive:chess_bot/checkpoints/run1/ \
+    > train.log 2>&1 &
+echo "training pid: $!  (tail -f $WORKDIR/train.log to watch progress)"
+echo ""
+echo "== when training is done (check train.log for 'done:'), DESTROY the pod from your LOCAL machine =="
+echo "==   (stopping alone keeps billing storage -- destroy is the only way to stop all charges) =="
