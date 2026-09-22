@@ -12,8 +12,11 @@ Tek bir reyting bandına (2000-2200) odaklanan, arama yapmayan bir transformer p
 - `docs/plans/01..06_*.md` — aşama aşama yapılacaklar listeleri (sırayla ilerler, her dosya bir öncekine/sonrakine link verir).
 - `docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md` — kullanılan kütüphaneler, dış kaynak adresleri (Lichess dump, Syzygy mirror, GPU kiralama), yerel geliştirme/notebook iş akışı.
 - `docs/log/Ilerleme_Notlari.md` — iş günlüğü, aşağıdaki kurala göre güncellenir.
+- `src/` — gerçek kod (encoding, veri pipeline, tablebase, ileride model/eğitim/deployment).
+- `tests/` — assert-bazlı, framework'süz self-check'ler (`python tests/test_x.py`), her non-trivial modülün bir tanesi olmalı.
+- `requirements.txt`, `.venv/` (gitignore'lu) — bkz. Teknoloji Yığını dosyası.
 
-Yeni bir plan/karar dokümanı gerekiyorsa `docs/` altında konusuna uygun bir klasöre (plans/, reference/, log/ veya yeni bir klasöre) eklenir — kök dizine md dosyası atılmaz, CLAUDE.md hariç.
+Yeni bir plan/karar dokümanı gerekiyorsa `docs/` altında konusuna uygun bir klasöre (plans/, reference/, log/ veya yeni bir klasöre) eklenir — kök dizine md dosyası atılmaz, CLAUDE.md ve oturumlar arası devir notu olan `HANDOFF.md` (varsa, geçici) hariç.
 
 ## İş Günlüğü Kuralı
 
@@ -29,4 +32,5 @@ Bir iş birimini (bir checklist maddesi, bir bug fix, bir aşamanın tamamı —
 - **Yerel GPU (RTX 3050 4GB) sadece toy-scale test için.** Gerçek eğitim Kaggle (ücretsiz) veya kiralık GPU'da (Vast.ai/RunPod) yapılır. Lokalde büyük batch/tam veri setiyle eğitim denemesi başarısız olur, beklenen bir durum.
 - **lichess-bot entegrasyonu `Homemade` motor sınıfı üzerinden.** UCI protokolü sıfırdan yazılmaz.
 - **Bilinen sınırlamalar bug değildir.** Reyting bandı dışı rakiplere karşı öngörülemez orta oyun davranışı ve failsafe'in sadece bariz kayıpları yakalaması, kabul edilmiş tasarım kararları (bkz. `docs/plans/00_Genel_Bakis.md#bilinen-sınırlamalar`). Bunları "düzeltmeye" çalışma, sadece belgele.
-- **Proje henüz git reposu değil.** İlk gerçek kodla birlikte `git init` önerilir; büyük/ikili dosyalar (veri shard'ları, checkpoint'ler, indirilen tablebase dosyaları) `.gitignore`'a eklenmeli.
+- **Büyük/ikili dosyalar commit'lenmez.** Veri shard'ları, checkpoint'ler, indirilen tablebase dosyaları `.gitignore`'da zaten var; yeni bir büyük/ikili dosya türü eklerse pattern'i genişlet.
+- **Birden fazla oturum eş zamanlı çalışabilir** (ör. ayrı worktree'lerde farklı aşamalar). Sadece kendi dosyalarını stage'le (`git add -A` değil, dosya dosya), commit at ama **push etme** — kullanıcı diff'i görüp onaylamadan uzak repoya gitmesin. Başka bir oturumun üzerinde çalıştığı dosyalara dokunma.
