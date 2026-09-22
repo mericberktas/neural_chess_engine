@@ -14,6 +14,12 @@ Format:
 
 ---
 
+## 2026-09-22 — build_dataset.py ~10x hızlandırıldı (header ön-filtre + multiprocessing)
+
+- Aşama: Altyapı (gelecekteki veri koşuları için — mevcut canlı RunPod koşusu bu değişiklikten etkilenmedi, ayrı bir kod snapshot'ı zaten çalışıyordu)
+- Yapıldı: `iter_raw_games` eklendi — her oyunu tam bir `chess.pgn.Game` ağacı kurmadan (pahalı: board simülasyonu içeriyor) ham (header, movetext) metin bloklarına ayırıyor. `parse_headers_text` + `headers_pass_filter` ile sadece header'lardan (regex) ucuza Elo/Event kontrolü yapılıyor — oyunların ~%97'si bu ucuz kontrolde elendiği için pahalı tam parse hiç çağrılmıyor. Geçen ~%3'lük kısım `multiprocessing.Pool` ile paralel worker'lara dağıtılıyor (`--workers`, varsayılan CPU sayısı-1) — önceden tek çekirdek kullanılıyordu, RunPod pod'unun 9 vCPU'sunun 8'i boşta duruyordu. `tests/test_build_dataset.py`: raw game splitting, header filtreleme, `_process_game`'in skip-plies/clock davranışı doğrulandı. Gerçek karşılaştırma (aynı makine/ağ, aynı 500 kalifiye oyun, canlı Lichess stream'i): eski kod 69.2 saniye, yeni kod 6.7 saniye — **~10.3x hızlanma**. Çıktı shard'ları (shape/dtype/move-range) doğrulandı, aynı sonuçları üretiyor.
+- Sıradaki adım/not: `pgn-extract` (harici C aracı) kullanıcı tarafından da önerilmişti — bu iki Python-native optimizasyon zaten büyük kazancı verdiği ve yeni bir sistem bağımlılığı gerektirmediği için şimdilik eklenmedi, kullanıcıya soruldu.
+
 ## 2026-09-22 — Otomatik Drive senkronizasyonu + arka planda eğitim (RunPod açılışı öncesi)
 
 - Aşama: Altyapı (Aşama 2, gerçek GPU koşusu — kullanıcı RunPod'a kredi yatırdı, hiperparametreler kesinleşti: batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, disk 80GB, RTX 4090 Community Cloud)

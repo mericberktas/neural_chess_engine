@@ -5,6 +5,13 @@ is streamed and decompressed on the fly, nothing is written to disk until a
 qualifying position is found, so --max-games lets you smoke-test the whole
 pipeline against a live remote dump without downloading the full month.
 
+~97% of games get rejected by the Elo/Event filter, so the reader splits each
+game into raw (header, movetext) text first and only hands the ~3% that pass
+a cheap header check to chess.pgn's real parser -- skips board-simulation
+cost for everything that was going to be thrown away anyway. That parse-and-
+encode step for accepted games is spread across a worker pool (--workers)
+since it's the remaining CPU-heavy part and most cores otherwise sit idle.
+
 Examples:
     # local smoke test, no download: read straight from the remote stream, stop early
     python src/build_dataset.py \\
@@ -18,17 +25,22 @@ Examples:
     python src/build_dataset.py --source lichess_db_standard_rated_2026-04.pgn.zst --out-dir data/test_2026-04 --split test
 """
 import argparse
+import functools
 import io
+import multiprocessing
+import os
+import re
 import sys
 import zlib
 from pathlib import Path
 
-import chess
 import chess.pgn
 import numpy as np
 import zstandard as zstd
 
 from encoding import board_to_tensor, move_to_indices
+
+_HEADER_RE = re.compile(r'^\[(\w+)\s+"(.*)"\]\s*$', re.MULTILINE)
 
 
 def open_pgn_stream(source: str):
@@ -47,12 +59,38 @@ def open_pgn_stream(source: str):
     return io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
 
 
-def game_passes_filters(game: chess.pgn.Game, min_elo: int, max_elo: int) -> bool:
-    if "Bullet" in game.headers.get("Event", ""):  # catches Bullet and UltraBullet
+def iter_raw_games(stream):
+    """Yield (header_text, movetext_text) per game as plain text, with no
+    parse-tree construction -- cheap enough to run on every game so a
+    header-only filter can reject most of them without ever invoking
+    chess.pgn.read_game(). Matches Lichess's dump layout: N header lines,
+    blank line, movetext, blank line, repeat.
+    """
+    header_lines: list[str] = []
+    movetext_lines: list[str] = []
+    in_movetext = False
+    for line in stream:
+        if line.strip():
+            (movetext_lines if in_movetext else header_lines).append(line)
+        elif header_lines and not in_movetext:
+            in_movetext = True
+        elif in_movetext and movetext_lines:
+            yield "".join(header_lines), "".join(movetext_lines)
+            header_lines, movetext_lines, in_movetext = [], [], False
+    if header_lines and movetext_lines:
+        yield "".join(header_lines), "".join(movetext_lines)
+
+
+def parse_headers_text(header_text: str) -> dict[str, str]:
+    return dict(_HEADER_RE.findall(header_text))
+
+
+def headers_pass_filter(headers, min_elo: int, max_elo: int) -> bool:
+    if "Bullet" in headers.get("Event", ""):  # catches Bullet and UltraBullet
         return False
     try:
-        white_elo = int(game.headers.get("WhiteElo", ""))
-        black_elo = int(game.headers.get("BlackElo", ""))
+        white_elo = int(headers.get("WhiteElo", ""))
+        black_elo = int(headers.get("BlackElo", ""))
     except ValueError:
         return False
     return min_elo <= white_elo <= max_elo and min_elo <= black_elo <= max_elo
@@ -64,6 +102,28 @@ def is_val_game(game_id: str, val_fraction: float) -> bool:
     # across languages/tools.
     bucket = zlib.crc32(game_id.encode("utf-8")) % 10_000
     return bucket < val_fraction * 10_000
+
+
+def _process_game(item: tuple[str, str, str], skip_plies: int, min_clock_seconds: float):
+    """Runs in a worker process: full-parse one already-accepted game and
+    encode its (board, move) pairs. This is the expensive step (PGN tree
+    build + board simulation per move), only ever called on the ~3% of
+    games that passed the cheap header filter.
+    """
+    header_text, movetext_text, target = item
+    game = chess.pgn.read_game(io.StringIO(header_text + "\n" + movetext_text))
+    if game is None:
+        return target, []
+    board = game.board()
+    results = []
+    for ply, node in enumerate(game.mainline(), start=1):
+        move = node.move
+        if ply > skip_plies:
+            clock = node.clock()
+            if clock is None or clock >= min_clock_seconds:
+                results.append((board_to_tensor(board), move_to_indices(move)))
+        board.push(move)
+    return target, results
 
 
 class ShardWriter:
@@ -109,8 +169,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-elo", type=int, default=2200)
     parser.add_argument("--skip-plies", type=int, default=10, help="Half-moves skipped at the start of each game (book/opening)")
     parser.add_argument("--min-clock-seconds", type=float, default=30.0)
-    parser.add_argument("--max-games", type=int, default=None, help="Stop after this many qualifying games (local smoke test)")
+    parser.add_argument("--max-games", type=int, default=None, help="Stop after roughly this many qualifying games")
     parser.add_argument("--shard-size", type=int, default=50_000)
+    parser.add_argument(
+        "--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+        help="Worker processes for parsing/encoding accepted games (the stream itself is read single-threaded)",
+    )
     return parser.parse_args()
 
 
@@ -126,41 +190,40 @@ def main() -> None:
         writers = {"test": ShardWriter(args.out_dir / "test", args.shard_size)}
 
     stream = open_pgn_stream(args.source)
+    games_seen = 0
 
-    games_seen = games_kept = positions_kept = 0
-    while True:
-        game = chess.pgn.read_game(stream)
-        if game is None:
-            break
-        games_seen += 1
+    def accepted_games():
+        nonlocal games_seen
+        for header_text, movetext_text in iter_raw_games(stream):
+            games_seen += 1
+            headers = parse_headers_text(header_text)
+            if not headers_pass_filter(headers, args.min_elo, args.max_elo):
+                continue
+            if args.split == "train":
+                game_id = headers.get("Site", f"game-{games_seen}")
+                target = "val" if is_val_game(game_id, args.val_fraction) else "train"
+            else:
+                target = "test"
+            yield header_text, movetext_text, target
 
-        if not game_passes_filters(game, args.min_elo, args.max_elo):
-            continue
+    worker = functools.partial(_process_game, skip_plies=args.skip_plies, min_clock_seconds=args.min_clock_seconds)
 
-        if args.split == "train":
-            game_id = game.headers.get("Site", f"game-{games_seen}")
-            writer = writers["val"] if is_val_game(game_id, args.val_fraction) else writers["train"]
-        else:
-            writer = writers["test"]
+    games_kept = positions_kept = 0
+    with multiprocessing.Pool(args.workers) as pool:
+        for target, results in pool.imap_unordered(worker, accepted_games(), chunksize=16):
+            if not results:
+                continue
+            writer = writers[target]
+            for board_tensor, move_idx in results:
+                writer.add(board_tensor, move_idx)
+                positions_kept += 1
+            games_kept += 1
 
-        board = game.board()
-        added_any = False
-        for ply, node in enumerate(game.mainline(), start=1):
-            move = node.move
-            if ply > args.skip_plies:
-                clock = node.clock()
-                if clock is None or clock >= args.min_clock_seconds:
-                    writer.add(board_to_tensor(board), move_to_indices(move))
-                    positions_kept += 1
-                    added_any = True
-            board.push(move)
+            if games_kept % 500 == 0:
+                print(f"... {games_seen} games seen, {games_kept} kept, {positions_kept} positions", file=sys.stderr)
 
-        games_kept += added_any
-        if games_kept and games_kept % 500 == 0:
-            print(f"... {games_seen} games seen, {games_kept} kept, {positions_kept} positions", file=sys.stderr)
-
-        if args.max_games is not None and games_kept >= args.max_games:
-            break
+            if args.max_games is not None and games_kept >= args.max_games:
+                break
 
     for writer in writers.values():
         writer.flush()
