@@ -14,6 +14,12 @@ Format:
 
 ---
 
+## 2026-09-22 — Checkpoint yedekleme için Google Drive (rclone) kuruldu
+
+- Aşama: Altyapı (Aşama 2'nin gerçek GPU koşusu için ön koşul)
+- Yapıldı: `rclone` Windows'a `winget` ile kuruldu (v1.75.1). Kullanıcının kişisel Google Drive'ına (Google One, 5TB) OAuth ile `gdrive:` remote'u olarak bağlandı — service account değil, kişisel hesap kotasını kullanıyor. rclone'un paylaşılan client_id'si 2026'da emekliye ayrıldığı için kullanıcı kendi Google Cloud OAuth client_id/secret'ını oluşturdu; ilk denemede OAuth consent screen "Testing" modda kalıp kendi hesabı test user listesine eklenmediği için 403 access_denied hatası alındı, test user eklenince düzeldi. `gdrive:chess_bot/checkpoints/` klasörü oluşturuldu ve `rclone lsd gdrive:` ile bağlantı doğrulandı. Detaylar `docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md`'ye eklendi.
+- Sıradaki adım/not: Kiralık GPU instance'ında da aynı `rclone.conf`'u kullanmak için oraya kopyalanması gerekecek (`scp` ile) — instance silinmeden önce checkpoint'i `rclone copy .../best.pt gdrive:chess_bot/checkpoints/` ile çekmek artık mümkün. PATH güncellemesi bu makinede yeni bir terminal/oturum açılana kadar `rclone` komutunu tanımayabilir, tam yol biliniyor (bkz. reference doc).
+
 ## 2026-09-22 — Aşama 4: Failsafe katmanı tamamlandı
 
 - Aşama: Aşama 4 — Failsafe Katmanı

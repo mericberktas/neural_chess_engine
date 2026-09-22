@@ -28,7 +28,18 @@ Bu doküman [Genel Bakış](../plans/00_Genel_Bakis.md) planında kullanılacak 
 ## Ortam ve Versiyon Kontrolü
 
 - **`venv`** + `requirements.txt` — poetry/conda'ya gerek yok, tek kişilik hobi projesi için fazladan karmaşıklık.
-- **`git`** — proje şu an bir git reposu değil; `git init` ile başlanması, haftalar sürecek bir eğitim sürecinde checkpoint/script kaybını önlemek için önerilir.
+- **`git`** — repo `git@github.com:mericberktas/neural_chess_engine.git`, `main` branch. Büyük/ikili dosyalar `.gitignore`'da (bkz. CLAUDE.md).
+
+## Checkpoint Yedekleme (Google Drive)
+
+Kiralık GPU instance'ı silinince (`vastai destroy instance`) diskteki her şey gidiyor — checkpoint'i instance'tan çekmeden silmemek gerekiyor. Bunun için `rclone` + kişisel Google Drive (Google One, 5TB) kullanılıyor; service account **değil**, normal OAuth ile kişisel hesap bağlandı (service account'un kendi ayrı 15GB kotası var, 5TB'a erişemiyor).
+
+- Kurulum: `winget install Rclone.Rclone` (Windows). Linux/macOS/kiralık instance: `curl https://rclone.org/install.sh | sudo bash`.
+- rclone'un paylaşılan client_id'si 2026'da emekliye ayrılıyor — kendi Google Cloud OAuth client_id'ini oluşturup (`rclone config` sırasında sorulur, adımlar [rclone.org/drive/#making-your-own-client-id](https://rclone.org/drive/#making-your-own-client-id)) kullanmak gerekiyor. OAuth consent screen "Testing" modda kalıyor (uygulama Google'a doğrulatılmadı) — kendi hesabını **Test users** listesine eklemek şart, yoksa 403 access_denied hatası alınır.
+- Remote adı: `gdrive:` (kişisel Drive, Shared Drive/Team Drive değil).
+- Klasör: `gdrive:chess_bot/checkpoints/`.
+- Kullanım: `rclone copy checkpoints/toy/best.pt gdrive:chess_bot/checkpoints/` (kiralık instance'tan da aynı komut, rclone.conf'u oraya kopyalayarak).
+- Kota: günlük 750GB upload limiti var, bizim kullanım (checkpoint'ler + gerekirse veri shard'ları) bunun çok altında.
 
 ## Dağıtım
 
