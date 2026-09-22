@@ -1,0 +1,10 @@
+data/
+*.npz
+*.pgn
+*.pgn.zst
+checkpoints/
+*.pt
+__pycache__/
+*.pyc
+.venv/
+venv/

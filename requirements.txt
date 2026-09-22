@@ -1,5 +1,6 @@
 torch
 chess
 zstandard
+requests
 numpy
 tensorboard
