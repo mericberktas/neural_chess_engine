@@ -2,6 +2,13 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-23 — run5 girdi zenginleştirme: `run5-rich-encoding` branch'inde encoding.py + model.py
+
+- Aşama: Aşama 2 — Model & Eğitim (bu branch'e özel, henüz `main`'e merge edilmedi)
+- Yapıldı: `git checkout -b run5-rich-encoding` (main'den) — run4'ün %50.02 val_top1'lik mimarisiyle karışmasın diye ayrı branch. `src/encoding.py`: `NUM_CHANNELS` 18→21, üç yeni kanal eklendi — 18: mobilite/legal-hamle maskesi (`board.legal_moves`'tan, sırası gelen tarafın hamlesi olan taşların kareleri), 19-20: son hamlenin kalkış/varış kareleri (`board.peek()`, ilk hamlede tamamen sıfır). `src/model.py`: `NUM_EXTRA_TOKENS` 6→8. Mobilite kanalı 64 kare token'ının her birine yeni bir `mobility_embed(0/1)` toplanarak eklendi (piece/positional embedding'in yanına); son hamle kareleri, en-passant token'ıyla birebir aynı desende (tip embed + flag embed + square_pos_embed) iki yeni "extra token" olarak eklendi — toplam token sayısı 70→72. `docs/reference/Egitim_Kosulari_Karsilastirma.md` de bu branch'ten önce, `main`'de, run1-4'ü karşılaştıran bir tablo olarak eklendi.
+- Değişen dosyalar: `src/encoding.py`, `src/model.py`, `src/train.py` (sadece docstring), `tests/test_encoding.py` (2 yeni test: mobilite ve son-hamle kanalları), `tests/test_train.py` ve `tests/test_build_dataset.py` (sabit `18` literalleri `encoding.NUM_CHANNELS`'a çevrildi — tam bu tür bir değişiklikte kırılmasınlar diye). Tüm test suite lokalde yeşil.
+- Sıradaki adım / blocker: Henüz hiçbir pod'da veri toplanmadı/eğitilmedi — kullanıcı bütçe (RunPod kredisi) yatırınca run5 başlatılacak. `--resume-from` bu koşuda kullanılamaz (girdi boyutu değişti, run3/run4'ün checkpoint'i mimari olarak uyumsuz), sıfırdan bir koşu olacak. Commit'lendi, bu branch push edilmedi.
+
 Format:
 
 ```

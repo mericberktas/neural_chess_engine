@@ -1,13 +1,15 @@
 """Encoder-only transformer policy network: board -> (from-square, to-square) logits.
 
-Consumes exactly the (18,8,8) board tensors produced by encoding.board_to_tensor
+Consumes exactly the (21,8,8) board tensors produced by encoding.board_to_tensor
 (see build_dataset.py for the shard format). Each of the 64 squares becomes one
-token (piece type+color embedding + learned per-square positional embedding);
-side-to-move, the four castling rights, and en-passant become six extra tokens
-(a shared "flag" embedding for 0/1 plus a per-token-kind embedding; the
-en-passant token also reuses the square positional embedding for its target
-square). Two linear heads turn each of the 64 board-token outputs into one
-from-square and one to-square logit.
+token (piece type+color embedding + learned per-square positional embedding +
+a mobility-flag embedding, from encoding.py's channel 18); side-to-move, the
+four castling rights, en-passant, and the previous move's from/to squares
+become eight extra tokens (a shared "flag" embedding for 0/1 plus a
+per-token-kind embedding; the en-passant and last-move tokens also reuse the
+square positional embedding for their target square). Two linear heads turn
+each of the 64 board-token outputs into one from-square and one to-square
+logit.
 """
 import chess
 import numpy as np
@@ -16,7 +18,7 @@ import torch.nn as nn
 
 NUM_SQUARES = 64
 NUM_PIECE_CLASSES = 13  # 0 = empty, 1-6 = white P N B R Q K, 7-12 = black P N B R Q K
-NUM_EXTRA_TOKENS = 6  # side-to-move, castle WK/WQ/BK/BQ, en-passant
+NUM_EXTRA_TOKENS = 8  # side-to-move, castle WK/WQ/BK/BQ, en-passant, last-move-from, last-move-to
 
 
 class ChessTransformer(nn.Module):
@@ -34,6 +36,7 @@ class ChessTransformer(nn.Module):
         self.square_pos_embed = nn.Embedding(NUM_SQUARES, d_model)
         self.extra_type_embed = nn.Embedding(NUM_EXTRA_TOKENS, d_model)
         self.flag_embed = nn.Embedding(2, d_model)
+        self.mobility_embed = nn.Embedding(2, d_model)
 
         layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
@@ -45,7 +48,7 @@ class ChessTransformer(nn.Module):
         self.to_head = nn.Linear(d_model, 1)
 
     def forward(self, boards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """boards: (B, 18, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
+        """boards: (B, 21, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
         boards = boards.float()
         batch = boards.shape[0]
         device = boards.device
@@ -57,7 +60,12 @@ class ChessTransformer(nn.Module):
         piece_idx = piece_idx.reshape(batch, NUM_SQUARES).long()
 
         square_ids = torch.arange(NUM_SQUARES, device=device)
-        board_tok = self.piece_embed(piece_idx) + self.square_pos_embed(square_ids).unsqueeze(0)
+        mobility = boards[:, 18].reshape(batch, NUM_SQUARES).long()
+        board_tok = (
+            self.piece_embed(piece_idx)
+            + self.square_pos_embed(square_ids).unsqueeze(0)
+            + self.mobility_embed(mobility)
+        )
 
         stm = boards[:, 12, 0, 0].long()
         castle_wk = boards[:, 13, 0, 0].long()
@@ -67,9 +75,15 @@ class ChessTransformer(nn.Module):
         ep_plane = boards[:, 17].reshape(batch, NUM_SQUARES)
         ep_present = (ep_plane.sum(dim=1) > 0).long()
         ep_square = ep_plane.argmax(dim=1)
+        last_from_plane = boards[:, 19].reshape(batch, NUM_SQUARES)
+        last_from_present = (last_from_plane.sum(dim=1) > 0).long()
+        last_from_square = last_from_plane.argmax(dim=1)
+        last_to_plane = boards[:, 20].reshape(batch, NUM_SQUARES)
+        last_to_present = (last_to_plane.sum(dim=1) > 0).long()
+        last_to_square = last_to_plane.argmax(dim=1)
 
         type_ids = torch.arange(NUM_EXTRA_TOKENS, device=device)
-        type_embeds = self.extra_type_embed(type_ids)  # (6, d_model)
+        type_embeds = self.extra_type_embed(type_ids)  # (8, d_model)
 
         flags = torch.stack([stm, castle_wk, castle_wq, castle_bk, castle_bq], dim=1)  # (B, 5)
         plain_tok = type_embeds[:5].unsqueeze(0) + self.flag_embed(flags)  # (B, 5, d_model)
@@ -78,9 +92,21 @@ class ChessTransformer(nn.Module):
             + self.flag_embed(ep_present)
             + self.square_pos_embed(ep_square)
         )  # (B, d_model)
-        extra_tok = torch.cat([plain_tok, ep_tok.unsqueeze(1)], dim=1)  # (B, 6, d_model)
+        last_from_tok = (
+            type_embeds[6].unsqueeze(0)
+            + self.flag_embed(last_from_present)
+            + self.square_pos_embed(last_from_square)
+        )  # (B, d_model)
+        last_to_tok = (
+            type_embeds[7].unsqueeze(0)
+            + self.flag_embed(last_to_present)
+            + self.square_pos_embed(last_to_square)
+        )  # (B, d_model)
+        extra_tok = torch.cat(
+            [plain_tok, ep_tok.unsqueeze(1), last_from_tok.unsqueeze(1), last_to_tok.unsqueeze(1)], dim=1
+        )  # (B, 8, d_model)
 
-        tokens = torch.cat([board_tok, extra_tok], dim=1)  # (B, 70, d_model)
+        tokens = torch.cat([board_tok, extra_tok], dim=1)  # (B, 72, d_model)
         encoded = self.encoder(tokens)
         board_encoded = encoded[:, :NUM_SQUARES]  # (B, 64, d_model)
 

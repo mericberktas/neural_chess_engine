@@ -34,8 +34,33 @@ def test_move_to_indices():
     assert move_to_indices(chess.Move.from_uci("e2e4")) == (12, 28)
 
 
+def test_mobility_plane_startpos():
+    t = board_to_tensor(chess.Board())
+    assert (t[18, 1, :] == 1).all()  # all 8 pawns can move
+    assert t[18, 0, 1] == 1 and t[18, 0, 6] == 1  # Nb1, Ng1 can move
+    assert t[18, 0, [0, 2, 3, 4, 5, 7]].sum() == 0  # rooks/bishops/queen/king still blocked
+    assert t[18, 2:].sum() == 0  # nothing else on the board yet
+
+
+def test_last_move_planes_empty_at_start_and_set_after_a_move():
+    start = board_to_tensor(chess.Board())
+    assert (start[19] == 0).all()
+    assert (start[20] == 0).all()
+
+    board = chess.Board()
+    for uci in ("e2e4", "a7a6", "e4e5", "d7d5"):
+        board.push(chess.Move.from_uci(uci))
+    t = board_to_tensor(board)
+    from_rank, from_file = divmod(chess.D7, 8)
+    to_rank, to_file = divmod(chess.D5, 8)
+    assert t[19, from_rank, from_file] == 1 and t[19].sum() == 1
+    assert t[20, to_rank, to_file] == 1 and t[20].sum() == 1
+
+
 if __name__ == "__main__":
     test_startpos_planes()
     test_en_passant_plane()
     test_move_to_indices()
+    test_mobility_plane_startpos()
+    test_last_move_planes_empty_at_start_and_set_after_a_move()
     print("OK - all encoding checks passed")

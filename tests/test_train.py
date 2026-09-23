@@ -13,6 +13,7 @@ import torch.optim as optim
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import train
+from encoding import NUM_CHANNELS
 from train import MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, save_checkpoint
 
 SHARD_SIZES = (5, 7, 3)  # deliberately uneven, and one tiny (size-3) shard
@@ -21,7 +22,7 @@ SHARD_SIZES = (5, 7, 3)  # deliberately uneven, and one tiny (size-3) shard
 def _make_shards(shard_dir: Path) -> None:
     shard_dir.mkdir(parents=True)
     for i, size in enumerate(SHARD_SIZES):
-        boards = np.zeros((size, 18, 8, 8), dtype=np.uint8)
+        boards = np.zeros((size, NUM_CHANNELS, 8, 8), dtype=np.uint8)
         moves = np.arange(size * 2, dtype=np.int16).reshape(size, 2)
         np.savez(shard_dir / f"shard_{i:05d}.npz", boards=boards, moves=moves)
 

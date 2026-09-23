@@ -1,6 +1,6 @@
 """Train the ChessTransformer policy network on build_dataset.py shards.
 
-Reads train/ and val/ subfolders of shard_*.npz files (boards: (N,18,8,8)
+Reads train/ and val/ subfolders of shard_*.npz files (boards: (N,NUM_CHANNELS,8,8)
 uint8, moves: (N,2) int16 = from_square, to_square). Val is evaluated every
 --val-interval steps (not once per epoch, since one epoch over the real
 dataset can be huge) and the checkpoint with the best val top-1 is kept.

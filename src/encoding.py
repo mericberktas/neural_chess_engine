@@ -1,12 +1,16 @@
 """Board/move <-> tensor encoding shared by data prep, training, and inference.
 
-18-channel scheme from the Maia-2 paper: 12 piece planes (type x color),
-1 side-to-move plane, 4 castling-rights planes, 1 en-passant plane.
+21-channel scheme: the Maia-2 paper's 18-channel base (12 piece planes,
+1 side-to-move plane, 4 castling-rights planes, 1 en-passant plane) plus 3
+short-term-context planes added for run5 -- a mobility mask (channel 18:
+squares holding a piece with >=1 legal move) and the previous move's
+from/to squares (channels 19-20, all-zero on the game's first move). See
+docs/reference/Egitim_Kosulari_Karsilastirma.md for why.
 """
 import chess
 import numpy as np
 
-NUM_CHANNELS = 18
+NUM_CHANNELS = 21
 
 _PIECE_ORDER = (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING)
 
@@ -27,6 +31,15 @@ def board_to_tensor(board: chess.Board) -> np.ndarray:
     if board.ep_square is not None:
         rank, file = divmod(board.ep_square, 8)
         tensor[17, rank, file] = 1
+    for move in board.legal_moves:
+        rank, file = divmod(move.from_square, 8)
+        tensor[18, rank, file] = 1
+    if board.move_stack:
+        last_move = board.peek()
+        rank, file = divmod(last_move.from_square, 8)
+        tensor[19, rank, file] = 1
+        rank, file = divmod(last_move.to_square, 8)
+        tensor[20, rank, file] = 1
     return tensor
 
 

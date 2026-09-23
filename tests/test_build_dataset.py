@@ -12,6 +12,7 @@ from build_dataset import (
     parse_headers_text,
     _process_game,
 )
+from encoding import NUM_CHANNELS
 
 # Three games back-to-back, Lichess dump layout: headers, blank line, one
 # movetext line, blank line. Only the first should pass the Elo/Event filter.
@@ -72,7 +73,7 @@ def test_process_game_encodes_the_accepted_game_correctly():
     # e4, e5, Nf3 -> 3 positions, skip_plies=0 keeps all of them
     assert len(results) == 3
     first_board, first_move = results[0]
-    assert first_board.shape == (18, 8, 8)
+    assert first_board.shape == (NUM_CHANNELS, 8, 8)
     assert first_move == (12, 28)  # e2e4
 
 
