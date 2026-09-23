@@ -12,6 +12,16 @@ Format:
 - Sıradaki adım / blocker: varsa
 ```
 
+## 2026-09-23 — run3 sonucu + run4 hazırlığı: LR decay (ReduceLROnPlateau) eklendi
+
+- Aşama: Aşama 2 — Model & Eğitim
+- run3 sonucu: pod kendi kendine, temiz şekilde bitirdi (watchdog değil, gerçek early-stopping). Best: step 64000, **val_top1 %45.08**, val_top3 %59.5 — sadece epoch 0 içinde (8 aylık veri için 1 epoch ~70k step), run2'nin %45.35'ine (2.1 epoch sürmüştü) çok daha az adımda ulaştı. Checkpoint: `gdrive:chess_bot/checkpoints/run3/best.pt`.
+- Kullanıcı val_top1'i 50'lere çıkarmak istiyor. Maia'nın mimarisini (GitHub'daki gerçek `maia_config.yaml`) kontrol ettim: 6 residual blok, 64 filtre, SE oranı 8 (LCZero "6x64-SE") — muhtemelen bizim 4.76M parametremizden daha küçük, yani kapasite tek başına sorun değil. Ama Maia'nın config'inde kademeli LR decay var (`lr_values: [0.1,0.01,0.001,0.0001]`), bizde sabit LR'di.
+- Yapıldı: `src/train.py`'a `torch.optim.lr_scheduler.ReduceLROnPlateau` eklendi (`--lr-patience` varsayılan 1, `--lr-factor` varsayılan 0.5) — val_top1 platoya girince LR'yi otomatik yarıya indiriyor, sabit step sınırı tahmin etmeye gerek yok. `scripts/runpod_overnight.sh`: `RUN_NAME` varsayılanı `run4`, `PATIENCE` 3'ten 4'e çıktı (LR decay'e early-stop'tan önce 2 val-check'lik nefes alanı versin diye), yeni `RESUME_FROM_REMOTE` env var'ı (varsayılan `gdrive:chess_bot/checkpoints/run3/best.pt`) — pod'da rclone ile indirilip `train.py --resume-from`'a veriliyor.
+- Önemli: run3'ün checkpoint'inde optimizer state YOK (run3, `--resume-from` eklenmeden önceki koddan çalıştı) — `train.py`'daki resume kodu bunu zaten graceful handle ediyor (uyarı basıp optimizer'ı sıfırdan başlatıyor), sorun değil.
+- Commit'lendi ve **push'landı** (bugünkü run3 olayından ders: pod'a clone/pull yaptırmadan önce push'lanmış olmalı).
+- Sıradaki adım: run4'ü başlat (yeni pod, `RESUME_FROM_REMOTE` ile run3'ten devam, LR decay aktif).
+
 ## 2026-09-23 — train.py'ye --resume-from eklendi; run3 (8 ay) canlı eğitimde
 
 - Aşama: Aşama 2 — Model & Eğitim (altyapı sağlamlaştırma) + Aşama 6 (canlı run3 koşusu izleniyor)

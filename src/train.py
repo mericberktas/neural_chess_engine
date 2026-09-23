@@ -198,6 +198,12 @@ def parse_args() -> argparse.Namespace:
              "predates it). Training then continues from that step count; the epoch loop still restarts "
              "at epoch 0 since shards are reshuffled each run anyway.",
     )
+    parser.add_argument(
+        "--lr-patience", type=int, default=1,
+        help="Halve (see --lr-factor) the learning rate after this many consecutive val checks with no "
+             "top-1 improvement. Should be < --patience so a decayed LR gets a chance before early stopping.",
+    )
+    parser.add_argument("--lr-factor", type=float, default=0.5, help="Multiply the learning rate by this on each --lr-patience plateau")
     return parser.parse_args()
 
 
@@ -216,6 +222,7 @@ def main() -> None:
         dim_feedforward=args.dim_feedforward, dropout=args.dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=args.lr_factor, patience=args.lr_patience)
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     writer = SummaryWriter(log_dir=str(args.out_dir / "tb"))
     ckpt_path = args.out_dir / "best.pt"
@@ -255,9 +262,15 @@ def main() -> None:
 
             if step % args.val_interval == 0:
                 top1, top3 = evaluate(model, val_loader, device, args.val_batches)
+                lr_before = optimizer.param_groups[0]["lr"]
+                lr_scheduler.step(top1)
+                lr_after = optimizer.param_groups[0]["lr"]
                 writer.add_scalar("val/top1", top1, step)
                 writer.add_scalar("val/top3", top3, step)
-                print(f"step {step} val_top1 {top1:.4f} val_top3 {top3:.4f}", file=sys.stderr)
+                writer.add_scalar("train/lr", lr_after, step)
+                print(f"step {step} val_top1 {top1:.4f} val_top3 {top3:.4f} lr {lr_after:.2e}", file=sys.stderr)
+                if lr_after != lr_before:
+                    print(f"  lr decayed {lr_before:.2e} -> {lr_after:.2e} (plateaued {args.lr_patience} checks)", file=sys.stderr)
                 if top1 > best_top1:
                     best_top1 = top1
                     checks_without_improvement = 0
