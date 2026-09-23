@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-23 — `scripts/harvest_filtered_pgn.py`: Lichess'i tekrar tekrar taramamak için
+
+- Aşama: Altyapı (tüm koşulara faydalı, `main`'e eklendi — run5 branch'ine özel değil)
+- Neden: `build_dataset.py`'ın en yavaş kısmı Lichess'ten aylık dump'ı indirip açıp milyonlarca oyunu 2000-2200 aralığı için taramak; kodlama (encode) adımı görece hızlı. run5'te `encoding.py`'ı değiştirdik (18→21 kanal) — mevcut shard'lar artık işe yaramıyor, sıfırdan indirip taramak gerekiyor. Kullanıcının fikri: filtrelenmiş ham PGN'i bir kere Drive'a kaydedelim, kodlama her değiştiğinde Lichess'e tekrar gitmeyelim.
+- Yapıldı: `scripts/harvest_filtered_pgn.py` eklendi — `build_dataset.py`'ın `open_pgn_stream`/`iter_raw_games`/`parse_headers_text`/`headers_pass_filter` fonksiyonlarını olduğu gibi kullanıyor (kod tekrarı yok), ama `_process_game`'in yaptığı pahalı parse+encode adımını atlayıp filtreden geçen oyunların ham (header+movetext) metnini ay başına bir `.pgn` dosyasına yazıyor, opsiyonel `--drive-remote` ile her ay bitince senkronize ediyor. GPU gerektirmiyor, lokalden çalıştırılabilir. `build_dataset.py`'a hiç dokunulmadı — zaten `--source` olarak yerel bir `.pgn` dosyasını kabul ediyor (`open_pgn_stream`'in var olan davranışı).
+- Bulunan gerçek bug: ilk yazımda `header_text` ile `movetext_text` arasına boş satır koymamıştım — `iter_raw_games`'in beklediği "header, boş satır, movetext, boş satır" düzenini bozuyordu, dosya geri okunduğunda ardışık oyunlar birbirine karışıp yarı sayıda "oyun" olarak görünüyordu (50 harvest edilen oyun geri okununca 25 çıktı). Gerçek bir Lichess kaynağına karşı 50 oyunluk duman testiyle yakalandı (birim testlerim sadece metin varlığını kontrol ediyordu, round-trip'i değil) — düzeltildi, hem birim testine (`test_harvested_file_is_correctly_re_splittable_into_separate_games`) hem gerçek veriyle tekrar doğrulamaya eklendi.
+- Sıradaki adım: Kullanıcı 12 aylık veriyi (ay ay) bu script ile Drive'a çekecek. Henüz çalıştırılmadı.
+
 Format:
 
 ```
