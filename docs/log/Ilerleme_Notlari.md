@@ -2,6 +2,13 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-23 — `runpod_overnight.sh`: pod'a önce Drive'dan çekmeyi dene, sonra Lichess'e düş
+
+- Aşama: Altyapı
+- Yapıldı: `scripts/harvest_filtered_pgn.py`'ın Drive'a yazdığı ay-başına filtrelenmiş PGN'ler artık gerçekten kullanılıyor. `fetch_month_source()` fonksiyonu her ay için önce `gdrive:chess_bot/filtered_pgn/{month}.pgn`'i (yeni `FILTERED_PGN_REMOTE`) `rclone copyto` ile çekmeyi dener; başarısız olursa (henüz harvest edilmemiş bir ay) eskisi gibi doğrudan Lichess URL'sine düşer — hiçbir ay için script'i kırmadan kademeli geçiş. Ayrıca yeni `NUM_MONTHS` env var'ı: verilirse `TRAIN_MONTHS`/`TEST_MONTH`'u elle yazmak yerine, `FILTERED_PGN_REMOTE`'daki mevcut ayları `rclone lsf` ile listeleyip en yeni N'ini train, ondan bir öncekini test olarak otomatik seçiyor (`NUM_MONTHS=8` ile run3/run4'ün seçtiği ayların birebir aynısı çıktığı doğrulandı).
+- Doğrulama: rclone'a gerçekten dokunmadan (fake `rclone` binary ile hem başarı hem hata yolu simüle edilerek) `fetch_month_source`'ın iki dalı da lokalde test edildi; `NUM_MONTHS` ay-seçme mantığı 13 aylık sahte bir listeyle run3/run4'ün gerçek seçimini birebir üretti. `bash -n` ile syntax doğrulandı (proje genelinde shell script'ler için ayrı bir test altyapısı yok, mevcut kural bu).
+- Sıradaki adım: Kullanıcının başlattığı 13 aylık harvest bitince (`gdrive:chess_bot/filtered_pgn/`), bir sonraki pod koşusu artık Lichess'e hiç gitmeden `NUM_MONTHS=N` ile çalışabilir.
+
 ## 2026-09-23 — `scripts/harvest_filtered_pgn.py`: Lichess'i tekrar tekrar taramamak için
 
 - Aşama: Altyapı (tüm koşulara faydalı, `main`'e eklendi — run5 branch'ine özel değil)
