@@ -146,9 +146,22 @@ done
 
 TEST_SOURCE=$(fetch_month_source "$TEST_MONTH")
 echo "== held-out test month: $TEST_MONTH (source: $TEST_SOURCE) =="
-python src/build_dataset.py \
+# Observed twice (2026-09-23): when a harvested source file has far more
+# games than TEST_MAX_GAMES needs, build_dataset.py's multiprocessing.Pool
+# is left with a big prefetch backlog at the --max-games break, and Pool
+# cleanup on exit can hang forever -- a known class of Python
+# multiprocessing issue, not specific to this data. Doesn't happen for
+# train months since their harvested file size matches TRAIN_MAX_GAMES
+# closely. test_full isn't needed for training itself (val comes from each
+# train month's own val/ split) so a stuck/failed test build must not be
+# allowed to hang an unattended run -- timeout, then a belt-and-suspenders
+# pkill since timeout alone doesn't reliably reach forked worker processes.
+if ! timeout 600 python src/build_dataset.py \
     --source "$TEST_SOURCE" \
-    --out-dir data/test_full --split test --max-games "$TEST_MAX_GAMES"
+    --out-dir data/test_full --split test --max-games "$TEST_MAX_GAMES"; then
+    echo "!! test month build timed out or failed -- continuing without it (not needed for training)"
+fi
+pkill -9 -f "src/build_dataset.py --source $TEST_SOURCE" 2>/dev/null || true
 
 RESUME_ARGS=()
 if [ -n "$RESUME_FROM_REMOTE" ]; then
