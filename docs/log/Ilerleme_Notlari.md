@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-23 — run5 ilk deneme: `RESUME_FROM_REMOTE=''` bug'ı pod'u boşa harcadı
+
+- Aşama: Aşama 2 — Model & Eğitim (run5, `run5-rich-encoding` branch'i, gerçek pod denemesi)
+- Olay: run5'i başlatırken `RESUME_FROM_REMOTE=''` ile resume'u kapatmaya çalıştım (run3/run4'ün checkpoint'i 18 kanallı, run5'in 21 kanallı modeliyle mimari uyumsuz). Ama script'te `RESUME_FROM_REMOTE="${RESUME_FROM_REMOTE:-gdrive:...}"` kullanılıyordu — bash'te `:-` operatörü boş string'i de "ayarlanmamış" sayıp varsayılanı devreye sokuyor. Script yine run3'ün checkpoint'ini çekti, `train.py --resume-from` ile 21 kanallı modele 18 kanallı state_dict yüklemeye çalıştı, çöktü — script `set -e` kullanmadığı için hatayı yutup "eğitim bitti" sanıp pod'u kendi kendine sildi. 8 aylık veri hazırlığı (bu sefer Drive'dan, birkaç dakikada bitmişti) boşa gitti.
+- Doğrulama: Panik yapmadan önce `run3`'ün checkpoint'ini indirip içeriğini kontrol ettim (`val_top1: 0.4508, step: 64000` — tam beklenen, dosya boyutu tesadüfen eski "bozuk" haliyle aynıydı ama içerik sağlamdı, bozulma yok). Hiçbir checkpoint yazma adımına ulaşılmadan çöktüğü için Drive'da hiçbir şey bozulmadı.
+- Fix: `RESUME_FROM_REMOTE="${RESUME_FROM_REMOTE:-...}"` → `"${RESUME_FROM_REMOTE-...}"` (tek tire — sadece gerçekten ayarlanmamışsa varsayılanı kullan, boş string'i olduğu gibi bırak). Lokalde üç senaryoyla (boş, unset, gerçek env var) doğrulandı.
+- Maliyet: ~15-20 dakikalık boşa giden pod süresi (~$0.20-0.25), bütçe zaten dardı ($2). Sıradaki adım: bu fix ile run5'i tekrar başlat, bu sefer resume'un gerçekten kapalı olduğunu pod loglarında `== fetching resume checkpoint` satırının HİÇ görünmediğini teyit ederek doğrula.
+
 ## 2026-09-23 — `runpod_overnight.sh`'a `GIT_BRANCH` parametresi
 
 - Aşama: Altyapı
