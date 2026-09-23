@@ -8,6 +8,16 @@
 # key. This script uses it only to terminate this one pod when done or if the
 # watchdog fires. Get one at runpod.io/console/user/settings -> API Keys.
 #
+# Transmitting that key from a Windows/PowerShell client: `$key | ssh host
+# "cat > /root/.runpod_key"` adds a UTF-8 BOM (﻿) at the start of the
+# piped text. It's invisible and .strip() does NOT remove it (BOM isn't
+# whitespace) -- it silently broke terminate_pod()'s HTTP header encoding on
+# 2026-09-22/23 and left a pod running for ~6 extra billed hours after
+# training had already finished successfully. Reading the key file with
+# `encoding='utf-8-sig'` (done below) strips a leading BOM if present and is
+# a no-op if it's not -- safe either way, keep it even if the transmission
+# method changes.
+#
 # Run this ON the instance after SSH-ing in (not on your local machine):
 #   bash scripts/runpod_overnight.sh
 #
@@ -35,7 +45,7 @@ terminate_self() {
     if [ -f "$KEY_FILE" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
         python -c "
 import runpod
-runpod.api_key = open('$KEY_FILE').read().strip()
+runpod.api_key = open('$KEY_FILE', encoding='utf-8-sig').read().strip()
 runpod.terminate_pod('$RUNPOD_POD_ID')
 print('self-terminated pod $RUNPOD_POD_ID')
 " 2>&1

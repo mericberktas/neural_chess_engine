@@ -12,6 +12,14 @@ Format:
 - Sıradaki adım / blocker: varsa
 ```
 
+## 2026-09-23 — Gece koşusu sonucu: %45.35 val top-1, ama öz-kapanma bug'ı yüzünden ~6 saat fazladan faturalandı
+
+- Aşama: Aşama 2 (ikinci eğitim koşusunun sonucu + postmortem)
+- Sonuç: Eğitim başarıyla tamamlandı — 4 aylık veri (~9M pozisyon), early stopping step 74000'de tetiklendi (3 kontrol boyunca iyileşme yok), **en iyi val_top1 %45.35, val_top3 %59.82** (ilk koşudaki %32.93'ten belirgin iyileşme, çok daha fazla veri sayesinde). Checkpoint `gdrive:chess_bot/checkpoints/run2/best.pt`'e sorunsuz senkronize olmuş, Drive'da doğrulandı.
+- **Bug**: Eğitim bitince pod kendini kapatmaya çalışırken çöktü — `UnicodeEncodeError: 'latin-1' codec can't encode character '﻿'`. Kök sebep: kısıtlı API key'i Windows/PowerShell'den `$rkey | ssh host "cat > /root/.runpod_key"` ile aktarırken PowerShell metnin başına görünmez bir **UTF-8 BOM** (`﻿`) karakteri ekliyor; `.strip()` bunu temizlemiyor (BOM standart boşluk değil). Bozuk key'le yapılan HTTP isteği çöktü, `terminate_pod` hiç çalışmadı. 8 saatlik watchdog henüz dolmadığı (pod ~7 saat 11 dakika çalışmıştı) için kullanıcı sabah kontrol edip haber verene kadar pod boşuna çalışmaya devam etti — **tahmini fazladan maliyet ~4$ (toplam ~5.3$, normalde ~1-1.5$ beklenirdi)**. Kullanıcı fark edince pod ana (kısıtlı olmayan) key ile lokalden manuel kapatıldı, `get_pods()` boş liste ile doğrulandı.
+- **Düzeltme**: `scripts/runpod_overnight.sh`'deki `terminate_self()`, key dosyasını artık `encoding='utf-8-sig'` ile okuyor — bu codec baştaki BOM'u varsa temizliyor, yoksa hiçbir şey değiştirmiyor (güvenli, iletim yöntemi değişse de kalabilir). Yerel bir simülasyonla (BOM'lu sahte key dosyası) düzeltmenin gerçekten işe yaradığı doğrulandı. Script'in başına da bu tuzağı anlatan bir not eklendi (gelecekte aynı iletim yöntemi kullanılırsa tekrar düşmemek için).
+- Sıradaki adım/not: Bu checkpoint (%45.35 top-1) şu ana kadarki en iyi model — Aşama 5 (test seti üzerinde ölçüm) veya Aşama 6 (lichess-bot entegrasyonu) için kullanılabilir. Gelecekte insansız bir koşu daha yapılırsa, öz-kapanmanın gerçekten çalıştığını (sadece log'da "self-terminated" satırını değil, `get_pods()`'un boş döndüğünü) doğrulamadan güvenilir saymamak gerekiyor — bu sefer bunu atladık.
+
 ---
 
 ## 2026-09-22 — Gece boyu insansız ikinci koşu için altyapı: early stopping, çoklu ay birleştirme, öz-kapanan pod
