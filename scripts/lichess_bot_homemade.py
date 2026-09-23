@@ -5,9 +5,11 @@ which only exist inside a lichess-bot checkout. The logic it calls into
 (NeuralChessEngine) is the part that's actually tested, in tests/test_engine.py.
 
 Wiring it in:
-1. Make this project's src/ importable from inside the lichess-bot checkout,
-   either by adding it to PYTHONPATH or inserting sys.path here, then copy
-   this class into (or import it from) lichess-bot's own homemade.py.
+1. Copy this class into (or append it to / import it from) lichess-bot's own
+   homemade.py -- once pasted there, it lives in a different directory tree
+   than this repo, so it can't find src/ via a relative path from its own
+   __file__ anymore. NEURAL_CHESS_SRC_DIR (env var, default below) points it
+   back at this repo's src/ -- override it if this repo ever moves.
 2. In lichess-bot's config.yml:
        engine:
          name: "NeuralChess"
@@ -18,7 +20,7 @@ Wiring it in:
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.environ.get("NEURAL_CHESS_SRC_DIR", r"C:\Users\meric\chess_bot\src"))
 
 import chess
 from chess.engine import PlayResult
