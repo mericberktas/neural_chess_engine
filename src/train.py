@@ -13,6 +13,12 @@ Example (toy CPU smoke test):
 Pass --drive-remote gdrive:chess_bot/checkpoints/run1/ to rclone-sync every
 new-best checkpoint off the instance as it's saved (requires rclone installed
 and configured -- see docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md).
+
+Regularization: AdamW (--weight-decay, default 0.01) instead of plain Adam,
+and label smoothing on both heads' cross-entropy (--label-smoothing, default
+0.1, 0 disables it). Dropout is a model hyperparameter (--dropout, already
+existed). Added after run2 (4 months, ~9M positions) plateaued at val_top1
+45.35% after ~2.1 epochs -- see docs/log/Ilerleme_Notlari.md.
 """
 import argparse
 import subprocess
@@ -158,6 +164,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None, help="Stop after this many steps regardless of epoch")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay")
+    parser.add_argument("--label-smoothing", type=float, default=0.1, help="Cross-entropy label smoothing (0 disables it)")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--val-interval", type=int, default=5000, help="Evaluate val every N steps")
     parser.add_argument(
@@ -193,8 +201,8 @@ def main() -> None:
         d_model=args.d_model, nhead=args.nhead, num_layers=args.num_layers,
         dim_feedforward=args.dim_feedforward, dropout=args.dropout,
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     writer = SummaryWriter(log_dir=str(args.out_dir / "tb"))
     ckpt_path = args.out_dir / "best.pt"
 

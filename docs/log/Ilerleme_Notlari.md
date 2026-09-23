@@ -12,6 +12,12 @@ Format:
 - Sıradaki adım / blocker: varsa
 ```
 
+## 2026-09-23 — train.py'ye regülarizasyon eklendi (sonraki koşu için, henüz başlatılmadı)
+
+- Aşama: Aşama 2 hazırlığı (kullanıcı Aşama 6'dan sonra veri miktarını artırıp regülarizasyonla yeni bir koşu yapmak istiyor — eğitim henüz başlatılmadı, sadece kod hazırlandı)
+- Yapıldı: `Adam` → `AdamW` + `--weight-decay` (varsayılan 0.01), `CrossEntropyLoss`'a `--label-smoothing` (varsayılan 0.1). Dropout zaten vardı. Gerçek bir toy koşuyla (200 oyun, AdamW+label-smoothing açık) uçtan uca çöküp çökmediği doğrulandı, çökmedi. Ayrı bir birim testi eklenmedi — bu, standart argparse değerlerini doğrudan PyTorch'un kendi API'lerine geçiren bir "kablolama" değişikliği, doğruluğu PyTorch tarafından garanti ediliyor, gerçek smoke test yeterli görüldü.
+- Sıradaki adım/not: Kullanıcıyla veri miktarı kararlaştırılacak (4 aydan 2 yıla kadar bir aralık konuşuluyor, ara bir değer — 8-12 ay — önerildi ama karar kullanıcıda). Onaylanınca yeni bir RunPod koşusu (muhtemelen yine gece boyu, `scripts/runpod_overnight.sh` kullanılarak — BOM bug'ı zaten düzeltilmiş durumda) başlatılacak. **Eğitim henüz başlamadı, kullanıcı açıkça "eğitime başlamayalım henüz" dedi.**
+
 ## 2026-09-23 — Aşama 6: lichess-bot entegrasyonu (motor katmanı) tamamlandı
 
 - Aşama: Aşama 6 — Dağıtım (motor katmanı; canlı Lichess bağlantısı hariç, kullanıcı aksiyonu bekliyor)
