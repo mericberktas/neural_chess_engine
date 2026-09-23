@@ -26,7 +26,18 @@
 #   TRAIN_MAX_GAMES, TEST_MAX_GAMES, EPOCHS, PATIENCE, WATCHDOG_HOURS,
 #   RESUME_FROM_REMOTE (an rclone path to a checkpoint, e.g.
 #   gdrive:chess_bot/checkpoints/run3/best.pt -- fetched and passed to
-#   train.py's --resume-from if set)
+#   train.py's --resume-from if set), FILTERED_PGN_REMOTE (default
+#   gdrive:chess_bot/filtered_pgn/ -- see scripts/harvest_filtered_pgn.py),
+#   NUM_MONTHS (if set, overrides TRAIN_MONTHS/TEST_MONTH: picks the N most
+#   recent months available in FILTERED_PGN_REMOTE as train, the next-oldest
+#   one as test)
+#
+# Per-month data comes from FILTERED_PGN_REMOTE when a month's file is
+# there (fast: a few-MB rclone copy, no re-scanning Lichess) and falls back
+# to streaming straight from database.lichess.org otherwise (slow, but
+# works for a month nobody has harvested yet). See
+# scripts/harvest_filtered_pgn.py -- run it locally ahead of time (no GPU
+# needed) to populate FILTERED_PGN_REMOTE and skip the slow path entirely.
 set -uo pipefail
 # deliberately NOT set -e: if a step fails partway through the night, we still
 # want execution to reach the final self-terminate call, not hang forever
@@ -44,6 +55,8 @@ EPOCHS="${EPOCHS:-15}"
 PATIENCE="${PATIENCE:-4}"
 WATCHDOG_HOURS="${WATCHDOG_HOURS:-8}"
 RESUME_FROM_REMOTE="${RESUME_FROM_REMOTE:-gdrive:chess_bot/checkpoints/run3/best.pt}"
+FILTERED_PGN_REMOTE="${FILTERED_PGN_REMOTE:-gdrive:chess_bot/filtered_pgn/}"
+NUM_MONTHS="${NUM_MONTHS:-}"
 KEY_FILE=/root/.runpod_key
 
 terminate_self() {
@@ -89,20 +102,48 @@ if [ ! -f /root/.config/rclone/rclone.conf ]; then
 fi
 rclone lsd gdrive: > /dev/null 2>&1 && echo "rclone OK, gdrive: remote reachable"
 
+if [ -n "$NUM_MONTHS" ]; then
+    echo "== NUM_MONTHS=$NUM_MONTHS set: picking months from $FILTERED_PGN_REMOTE =="
+    mapfile -t AVAILABLE < <(rclone lsf "$FILTERED_PGN_REMOTE" | sed -n 's/\.pgn$//p' | sort -r)
+    if [ "${#AVAILABLE[@]}" -lt "$((NUM_MONTHS + 1))" ]; then
+        echo "!! only ${#AVAILABLE[@]} months harvested in $FILTERED_PGN_REMOTE, need NUM_MONTHS+1=$((NUM_MONTHS + 1)) (train+test)"; terminate_self; exit 1
+    fi
+    TRAIN_MONTHS="${AVAILABLE[*]:0:$NUM_MONTHS}"
+    TEST_MONTH="${AVAILABLE[$NUM_MONTHS]}"
+    echo "TRAIN_MONTHS=$TRAIN_MONTHS"
+    echo "TEST_MONTH=$TEST_MONTH"
+fi
+
+# Prefer an already-harvested filtered .pgn from Drive (fast: a few-MB copy,
+# no re-scanning the full monthly dump) over streaming straight from
+# Lichess (slow, but the only option for a month nobody has harvested yet).
+fetch_month_source() {
+    local month="$1"
+    local local_path="filtered_pgn/${month}.pgn"
+    mkdir -p filtered_pgn
+    if rclone copyto "${FILTERED_PGN_REMOTE}${month}.pgn" "$local_path" 2>/dev/null && [ -s "$local_path" ]; then
+        echo "$local_path"
+    else
+        echo "https://database.lichess.org/standard/lichess_db_standard_rated_${month}.pgn.zst"
+    fi
+}
+
 TRAIN_DIRS=()
 VAL_DIRS=()
 for month in $TRAIN_MONTHS; do
-    echo "== train data: $month =="
+    SOURCE=$(fetch_month_source "$month")
+    echo "== train data: $month (source: $SOURCE) =="
     python src/build_dataset.py \
-        --source "https://database.lichess.org/standard/lichess_db_standard_rated_${month}.pgn.zst" \
+        --source "$SOURCE" \
         --out-dir "data/train_${month}" --split train --max-games "$TRAIN_MAX_GAMES"
     TRAIN_DIRS+=("data/train_${month}/train")
     VAL_DIRS+=("data/train_${month}/val")
 done
 
-echo "== held-out test month: $TEST_MONTH =="
+TEST_SOURCE=$(fetch_month_source "$TEST_MONTH")
+echo "== held-out test month: $TEST_MONTH (source: $TEST_SOURCE) =="
 python src/build_dataset.py \
-    --source "https://database.lichess.org/standard/lichess_db_standard_rated_${TEST_MONTH}.pgn.zst" \
+    --source "$TEST_SOURCE" \
     --out-dir data/test_full --split test --max-games "$TEST_MAX_GAMES"
 
 RESUME_ARGS=()
