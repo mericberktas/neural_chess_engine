@@ -22,7 +22,7 @@
 #   bash scripts/runpod_overnight.sh
 #
 # Configurable via env vars (all optional, shown with defaults):
-#   REPO_URL, WORKDIR, TRAIN_MONTHS (space-separated), TEST_MONTH,
+#   REPO_URL, WORKDIR, RUN_NAME, TRAIN_MONTHS (space-separated), TEST_MONTH,
 #   TRAIN_MAX_GAMES, TEST_MAX_GAMES, EPOCHS, PATIENCE, WATCHDOG_HOURS
 set -uo pipefail
 # deliberately NOT set -e: if a step fails partway through the night, we still
@@ -32,8 +32,9 @@ set -uo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/mericberktas/neural_chess_engine.git}"
 WORKDIR="${WORKDIR:-/workspace/neural_chess_engine}"
-TRAIN_MONTHS="${TRAIN_MONTHS:-2026-08 2026-07 2026-06 2026-05}"
-TEST_MONTH="${TEST_MONTH:-2026-04}"
+RUN_NAME="${RUN_NAME:-run3}"
+TRAIN_MONTHS="${TRAIN_MONTHS:-2026-08 2026-07 2026-06 2026-05 2026-04 2026-03 2026-02 2026-01}"
+TEST_MONTH="${TEST_MONTH:-2025-12}"
 TRAIN_MAX_GAMES="${TRAIN_MAX_GAMES:-40000}"
 TEST_MAX_GAMES="${TEST_MAX_GAMES:-5000}"
 EPOCHS="${EPOCHS:-15}"
@@ -103,10 +104,10 @@ python src/build_dataset.py \
 echo "== training: cap ${EPOCHS} epochs, early stop after ${PATIENCE} non-improving val checks =="
 python src/train.py \
     --train-dir "${TRAIN_DIRS[@]}" --val-dir "${VAL_DIRS[@]}" \
-    --out-dir checkpoints/run2 \
+    --out-dir "checkpoints/$RUN_NAME" \
     --batch-size 256 --d-model 256 --nhead 8 --num-layers 6 --dim-feedforward 1024 \
     --val-interval 2000 --epochs "$EPOCHS" --patience "$PATIENCE" \
-    --drive-remote gdrive:chess_bot/checkpoints/run2/
+    --drive-remote "gdrive:chess_bot/checkpoints/$RUN_NAME/"
 
 echo "== training finished, self-terminating =="
 kill "$WATCHDOG_PID" 2>/dev/null
