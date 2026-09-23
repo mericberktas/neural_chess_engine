@@ -12,6 +12,17 @@ Format:
 - Sıradaki adım / blocker: varsa
 ```
 
+## 2026-09-23 — Canlı maçlardan görülen iki çizim (draw) bug'ı düzeltildi: tekrar + pat
+
+- Aşama: Aşama 6 — Dağıtım (canlı Lichess botu izleme/düzeltme)
+- Yapıldı: `src/engine.py`'da `select_move` içine, adayları (top-k ANN çıktısı) oynamadan önce "bu hamle oyunu berabere bitirir mi" filtresi eklendi (`_deprioritize_drawing_moves` / `_draws_the_game`). İki gerçek canlı örnek üzerinden teşhis edildi:
+  - maia1 ve turochamp-1ply'a karşı kazanan pozisyonlarda 3 kez hamle tekrarıyla berabere kalınmış — motor aramasız/deterministik olduğu için, rakip de deterministik olunca ikisi de aynı "en iyi" hamleyi sonsuz tekrar ediyor.
+  - meriicnumber2'ye karşı tamamen kazanılmış bir K+V+piyon sonoyununda pat olundu (`51...e4`). Pozisyonda 6 taş vardı, tablebase eşiği (`DEFAULT_PIECE_THRESHOLD=5`) üstünde kaldığı için Syzygy hiç devreye girmedi; o pozisyonda 29 legal hamlenin 6'sı doğrudan pat ediyordu, ANN bunlardan birini oynadı.
+  - Fix: aday listesindeki bir hamle `board.is_repetition(3)` veya `board.is_stalemate()`'e yol açıyorsa, listede daha güvenli bir alternatif varsa o hamle sona atılıyor (failsafe'in `pick_safe_move`'daki "sıralı listede ilk uygunu seç" düzenine paralel). Alternatif yoksa eskisi gibi davranır.
+- Değişen dosyalar: `src/engine.py`, `tests/test_engine.py` (iki yeni test: tekrar ve pat senaryoları, ikincisi gerçek maçtaki pozisyonu kullanıyor).
+- Ayrıca (bu repoya commit'lenmeyen, ayrı `lichess-bot` klonunda) `lib/lichess_bot.py`'daki `watch_control_stream` reconnect döngüsü düzeltildi: `RateLimitedError` fırlatıldığında kod hata tipine bakmaksızın sadece 1 saniye bekleyip tekrar deniyordu, bu da `/api/stream/event` rate-limit'ini sürekli yeniden tetikleyip botu kalıcı bir döngüde kilitliyordu (kullanıcının attığı yeni bir maç bottan hiç haberdar olunamadı). Artık `e.timeout` kadar bekliyor.
+- Sıradaki adım / blocker: Yok — canlı bota deploy edildi (aktif maç yokken restart edildi, tüm testler yeşil). Sıradaki büyük adım hâlâ konuşulan 8 aylık + regülarizasyonlu eğitim koşusu (henüz başlatılmadı, kullanıcı onayı bekleniyor).
+
 ## 2026-09-23 — train.py'ye regülarizasyon eklendi (sonraki koşu için, henüz başlatılmadı)
 
 - Aşama: Aşama 2 hazırlığı (kullanıcı Aşama 6'dan sonra veri miktarını artırıp regülarizasyonla yeni bir koşu yapmak istiyor — eğitim henüz başlatılmadı, sadece kod hazırlandı)

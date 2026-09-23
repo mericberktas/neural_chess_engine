@@ -15,6 +15,36 @@ from tablebase import best_move as tablebase_best_move
 from tablebase import open_tablebase, should_probe
 
 
+def _draws_the_game(board: chess.Board, move: chess.Move) -> bool:
+    """True if playing `move` immediately stalemates the opponent or repeats
+    the position for the 3rd time -- the two ways the ANN can turn a won game
+    into a draw without ever realizing it (it has no search/eval, so it
+    can't tell a move ends the game at all).
+
+    Observed live: two winning positions drawn by repetition (vs maia1, vs
+    turochamp-1ply -- deterministic policy replays the same "best" move
+    forever against an equally deterministic opponent), and a completely
+    winning K+Q+pawns endgame stalemated (6 pieces on board, one over the
+    tablebase's 5-piece cutoff, so no perfect-play fallback caught it).
+    """
+    board.push(move)
+    try:
+        return board.is_stalemate() or board.is_repetition(3)
+    finally:
+        board.pop()
+
+
+def _deprioritize_drawing_moves(board: chess.Board, candidates: list[chess.Move]) -> list[chess.Move]:
+    """Reorders candidates so a move that draws the game (see
+    `_draws_the_game`) is tried last, not first. Leaves order unchanged when
+    no candidate draws, and still falls back to a drawing move if every
+    candidate does (e.g. forced sequences)."""
+    keep, drawing = [], []
+    for move in candidates:
+        (drawing if _draws_the_game(board, move) else keep).append(move)
+    return keep + drawing
+
+
 def load_model(checkpoint_path: str, device: str = "cpu") -> ChessTransformer:
     ckpt = torch.load(checkpoint_path, map_location=device)
     model = ChessTransformer(**ckpt["model_args"]).to(device)
@@ -38,6 +68,7 @@ class NeuralChessEngine:
                 return move
 
         candidates = self._policy_candidates(board)
+        candidates = _deprioritize_drawing_moves(board, candidates)
         move, rejected = pick_safe_move(board, candidates)
         if rejected > 0:
             # Stage 5 wants failsafe-trigger frequency monitored; this is the
