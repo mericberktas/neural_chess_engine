@@ -10,6 +10,7 @@ import numpy as np
 import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import train
 from train import MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, save_checkpoint
 
 SHARD_SIZES = (5, 7, 3)  # deliberately uneven, and one tiny (size-3) shard
@@ -77,17 +78,25 @@ def test_shard_dataset_combines_multiple_directories():
 
 
 def test_save_checkpoint_survives_missing_rclone():
-    # drive_remote set but rclone isn't necessarily on PATH in a test env --
-    # save_checkpoint must not raise either way (missing binary, or a real
-    # rclone failing for some other reason). This is a regression test for a
-    # real bug: subprocess.run() raises FileNotFoundError for a missing
-    # executable, which isn't a nonzero-returncode case.
-    with tempfile.TemporaryDirectory() as tmp:
-        model = nn.Linear(4, 4)
-        args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:definitely/does/not/matter/")
-        path = Path(tmp) / "checkpoints" / "best.pt"
-        save_checkpoint(path, model, args, step=1, top1=0.0, top3=0.0)  # must not raise
-        assert path.exists()
+    # Regression test for a real bug: subprocess.run() raises
+    # FileNotFoundError for a missing executable, which a returncode-only
+    # check doesn't catch. subprocess.run is patched directly rather than
+    # relying on rclone actually being absent from PATH -- on a machine
+    # where rclone *is* installed and configured (this one, later), the
+    # unpatched version of this test really hit the network and wrote a
+    # junk checkpoint to a real Google Drive remote. Tests must not depend
+    # on ambient environment state for something this consequential.
+    real_run = train.subprocess.run
+    train.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("simulated: rclone not found"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = nn.Linear(4, 4)
+            args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:some/fake/remote/")
+            path = Path(tmp) / "checkpoints" / "best.pt"
+            save_checkpoint(path, model, args, step=1, top1=0.0, top3=0.0)  # must not raise
+            assert path.exists()
+    finally:
+        train.subprocess.run = real_run
 
 
 if __name__ == "__main__":

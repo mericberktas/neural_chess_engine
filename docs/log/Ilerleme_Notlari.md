@@ -12,6 +12,14 @@ Format:
 - Sıradaki adım / blocker: varsa
 ```
 
+## 2026-09-23 — Aşama 6: lichess-bot entegrasyonu (motor katmanı) tamamlandı
+
+- Aşama: Aşama 6 — Dağıtım (motor katmanı; canlı Lichess bağlantısı hariç, kullanıcı aksiyonu bekliyor)
+- Yapıldı: `src/model.py`'ye `top_k_legal_moves` eklendi (tek-hamle `select_legal_move`'un genelleştirilmiş hali — promosyon eşitliklerinde vezir tercihi aynı kalıyor), `select_legal_move` artık onun üzerine kurulu. `src/engine.py` eklendi: `NeuralChessEngine` sınıfı — karar sırası tablebase (≤5 taş) → ANN top-k adayları → failsafe filtresi, `failsafe_triggers` sayacı Aşama 5 için hazır bir izleme kancası. `tests/test_engine.py`: tablebase yolunun gerçekten önceliği aldığı (doğrudan `tablebase.best_move` ile karşılaştırılarak), ANN yolunun (tablebase yokken) legal hamle döndürdüğü, ve failsafe kablolamasının (stub'lanmış aday listesiyle, zaten test edilmiş `pick_safe_move` mantığını tekrar doğrulamadan sadece bağlantıyı) çalıştığı doğrulandı. `scripts/lichess_bot_homemade.py` eklendi — lichess-bot'un (ayrı repo) `homemade.py`'sine eklenecek ince adaptör, `MinimalEngine`'i `NeuralChessEngine.select_move`'a bağlıyor; bu dosya lichess-bot'un kendi `lib` modüllerine bağımlı olduğu için bu repoda test edilemiyor/çalıştırılamıyor, sadece `NeuralChessEngine`'in kendisi test edildi.
+- Doğrulama: gerçek eğitilmiş checkpoint (`run2/best.pt`, Drive'dan indirildi) ile Lichess hesabı gerekmeden 3 self-play parti oynatıldı (tek seferlik script, commit'lenmedi) — çökme yok, illegal hamle yok, failsafe parti başına ortalama 4 kez tetiklendi (97 ply/parti, tahtalar deterministik olduğu için 3 parti aynı sonuçla bitti — model rastgelelik içermiyor, beklenen davranış).
+- Ayrı bug bulundu ve düzeltildi (Aşama 6 ile ilgisiz ama testler çalıştırılırken ortaya çıktı): `tests/test_train.py`'nin rclone-hata testi, rclone artık PATH'te ve gerçek `gdrive:` remote'una bağlı olduğu için gerçek Drive'a çöp bir dosya yazmıştı (`gdrive:definitely/does/not/matter/best.pt`) — temizlendi, test artık `subprocess.run`'ı mock'layarak ortam durumuna bağımlı olmaktan çıkarıldı.
+- Sıradaki adım/not: Canlı Lichess testi için kullanıcının kendi bot hesabını/API token'ını açması gerekiyor (bu bir hesap oluşturma adımı, otomatikleştirilemez). Onun dışında Aşama 6'nın motor tarafı tamam. Sırada: regülarizasyon (AdamW + weight decay, label smoothing) eklenip daha büyük veriyle (kullanıcıyla kararlaştırılacak miktar) bir sonraki eğitim koşusu — henüz başlatılmadı.
+
 ## 2026-09-23 — Gece koşusu sonucu: %45.35 val top-1, ama öz-kapanma bug'ı yüzünden ~6 saat fazladan faturalandı
 
 - Aşama: Aşama 2 (ikinci eğitim koşusunun sonucu + postmortem)

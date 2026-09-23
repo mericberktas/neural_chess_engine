@@ -108,13 +108,37 @@ def mask_move_logits(from_logits: torch.Tensor, to_logits: torch.Tensor, mask: n
     return joint.masked_fill(~mask_t, float("-inf"))
 
 
-def select_legal_move(from_logits: torch.Tensor, to_logits: torch.Tensor, board: chess.Board) -> chess.Move:
-    """Highest-scoring legal move. When a (from, to) pair matches several
-    legal moves (underpromotion choices), queen promotion is preferred."""
-    joint = mask_move_logits(from_logits, to_logits, legal_move_mask(board))
-    from_sq, to_sq = divmod(int(joint.argmax().item()), NUM_SQUARES)
-    candidates = [m for m in board.legal_moves if m.from_square == from_sq and m.to_square == to_sq]
+def _prefer_queen(candidates: list[chess.Move]) -> chess.Move:
+    """Among legal moves sharing a (from, to) pair (underpromotion choices),
+    prefer queen promotion; otherwise just the one candidate."""
     for m in candidates:
         if m.promotion in (None, chess.QUEEN):
             return m
     return candidates[0]
+
+
+def top_k_legal_moves(from_logits: torch.Tensor, to_logits: torch.Tensor, board: chess.Board, k: int) -> list[chess.Move]:
+    """Up to k distinct legal moves by joint from/to score, most likely
+    first. Promotion ties collapse to one entry each (see _prefer_queen) so
+    the ranking reflects distinct (from, to) squares, not raw score-matrix
+    cells."""
+    joint = mask_move_logits(from_logits, to_logits, legal_move_mask(board))
+    order = torch.argsort(joint.flatten(), descending=True)
+    moves: list[chess.Move] = []
+    seen_squares: set[tuple[int, int]] = set()
+    for idx in order.tolist():
+        if joint.flatten()[idx].item() == float("-inf") or len(moves) >= k:
+            break
+        from_sq, to_sq = divmod(idx, NUM_SQUARES)
+        if (from_sq, to_sq) in seen_squares:
+            continue
+        seen_squares.add((from_sq, to_sq))
+        candidates = [m for m in board.legal_moves if m.from_square == from_sq and m.to_square == to_sq]
+        moves.append(_prefer_queen(candidates))
+    return moves
+
+
+def select_legal_move(from_logits: torch.Tensor, to_logits: torch.Tensor, board: chess.Board) -> chess.Move:
+    """Highest-scoring legal move. When a (from, to) pair matches several
+    legal moves (underpromotion choices), queen promotion is preferred."""
+    return top_k_legal_moves(from_logits, to_logits, board, k=1)[0]

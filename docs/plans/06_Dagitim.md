@@ -6,9 +6,9 @@ Bu aşama ikiye ayrılıyor. **Sargı/entegrasyon kısmı erken yapılır** (bkz
 
 ## Yapılacaklar
 
-- [ ] (Erken, Aşama 2 sırasında) UCI protokolünü sıfırdan yazma: resmi [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) (Python 3.10+, aktif proje) `Homemade` motor sınıfını destekliyor — modeli doğrudan bir Python sınıfı olarak bu arayüze eklemek, stdin/stdout üzerinden UCI mesajlaşması yazmaktan çok daha az kod
-- [ ] (Erken) İlk checkpoint'le birkaç deneme/casual parti oynat, sargı buglarını (illegal hamle, crash, tablebase/failsafe'in hiç tetiklenmemesi) burada yakala
-- [ ] (Sonda, best-checkpoint ile) lichess-bot'u tam eğitilmiş modelle bir Lichess hesabına bağla, geniş çaplı canlı test yap
+- [x] UCI protokolünü sıfırdan yazma: `src/engine.py`'deki `NeuralChessEngine` (tablebase → ANN top-k → failsafe sırasıyla) + `scripts/lichess_bot_homemade.py` (lichess-bot'un `Homemade`/`MinimalEngine` arayüzüne ince bir adaptör) — `tests/test_engine.py`'de tablebase önceliği, ANN yolu, failsafe kablolaması ayrı ayrı doğrulandı
+- [x] İlk (gerçek, `run2/best.pt`) checkpoint'le sargı buglarını yakalama: Lichess hesabı gerekmeden 3 self-play parti oynatıldı (`selfplay_smoke.py`, tek seferlik doğrulama) — çökme yok, illegal hamle yok, failsafe partide ortalama 4 kez tetiklendi (aşırı sık değil)
+- [ ] (Sonda, best-checkpoint ile) lichess-bot'u tam eğitilmiş modelle bir Lichess hesabına bağla, geniş çaplı canlı test yap — **kullanıcının kendi Lichess bot hesabını/API token'ını açması gerekiyor**, bu adım bekliyor
 - [ ] Oynanan partileri kaydet, ileri iterasyon için kullan
 
 ## Tahmini Süre
