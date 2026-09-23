@@ -2,6 +2,16 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-23 — run5 canlı eğitimde: iki gerçek bug bulunup düzeltildi (`main`'e backport)
+
+- Aşama: Altyapı + Aşama 2 (run5, `run5-rich-encoding` branch'i, canlı pod)
+- run5'i başlatırken art arda iki gerçek, tekrarlanabilir bug bulundu (ikisi de önce `run5-rich-encoding`'de düzeltilip doğrulandı, sonra buraya, `main`'e backport edildi):
+  1. **`RESUME_FROM_REMOTE=''` etkisiz kalıyordu** — bash'te `${VAR:-default}` boş string'i "ayarlanmamış" sayıyor. run3/run4'ün 18 kanallı checkpoint'i run5'in 21 kanallı modeliyle mimari uyumsuz olduğu için resume'u kapatmam gerekiyordu ama script yine varsayılanı (run3'ün checkpoint'i) çekip `train.py`'ı çökertti; script `set -e` kullanmadığı için "eğitim bitti" sanıp pod'u sildi. Fix: `${VAR:-default}` → `${VAR-default}` (tek tire, sadece gerçekten unset ise varsayılanı kullan).
+  2. **Test ayı verisi build'i donuyordu** (iki kez, iki ayrı pod'da tekrarlanabilir) — harvest edilen dosyada `TEST_MAX_GAMES`'den çok daha fazla oyun var (harvest'in kendi varsayılanı 40000, TEST_MAX_GAMES 5000), `--max-games` sınırına ulaşınca multiprocessing.Pool'da büyük bir kuyruk artığı kalıyor, pool temizliği (`with Pool() as pool` çıkışı) sonsuza kadar takılabiliyor — bilinen bir Python multiprocessing sınıfı sorun. Train ayları bunu hiç yaşamıyor (harvest boyutu zaten TRAIN_MAX_GAMES'e yakın). Fix: test ayı build'i `timeout 600` ile sarmalandı + `pkill` ile garanti temizlik (timeout tek başına fork edilen worker süreçlerine güvenilir ulaşmıyor). `test_full` zaten eğitimde kullanılmıyor (val, train aylarının kendi val/ bölümünden geliyor), o yüzden atlanması güvenli.
+- Doğrulama: İkinci bug'ın fix'i canlı bir pod'da gerçekten test edildi — aynı donma tekrar oldu ama bu sefer script 600 saniye sonra kendi kendine vazgeçip **hiçbir manuel müdahale olmadan** eğitime geçti. Eğitim GPU'da doğrulandı (`nvidia-smi`: %97 kullanım, 2.8GB bellek — ~25 step/sn, run3/run4 ile aynı hız).
+- Maliyet: Bu iki bug + Community Cloud kapasitesizliği yüzünden run5'i açmak 4 pod denemesi aldı (~$0.4-0.5 boşa gitti, kullanıcının $2 bütçesinden). Checkpoint'lere hiçbir zaman zarar gelmedi (crash'ler her zaman checkpoint yazımından ÖNCE oluyordu).
+- Sıradaki adım / blocker: run5 şu an sağlıklı çalışıyor (`gdrive:chess_bot/checkpoints/run5/`), izleniyor. Bu iki fix `main`'e de commit'lendi/push'landı, gelecekteki tüm koşular (run6+) otomatik olarak faydalanacak.
+
 ## 2026-09-23 — run5 ilk deneme: `RESUME_FROM_REMOTE=''` bug'ı pod'u boşa harcadı
 
 - Aşama: Aşama 2 — Model & Eğitim (run5, `run5-rich-encoding` branch'i, gerçek pod denemesi)
