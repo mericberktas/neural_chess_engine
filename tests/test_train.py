@@ -7,7 +7,9 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import torch
 import torch.nn as nn
+import torch.optim as optim
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import train
@@ -91,12 +93,46 @@ def test_save_checkpoint_survives_missing_rclone():
     try:
         with tempfile.TemporaryDirectory() as tmp:
             model = nn.Linear(4, 4)
+            optimizer = optim.AdamW(model.parameters())
             args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:some/fake/remote/")
             path = Path(tmp) / "checkpoints" / "best.pt"
-            save_checkpoint(path, model, args, step=1, top1=0.0, top3=0.0)  # must not raise
+            save_checkpoint(path, model, optimizer, args, step=1, top1=0.0, top3=0.0)  # must not raise
             assert path.exists()
     finally:
         train.subprocess.run = real_run
+
+
+def test_resuming_restores_model_and_optimizer_state():
+    # Exercises the same load_state_dict calls main()'s --resume-from block
+    # makes, without needing to invoke the CLI end-to-end.
+    with tempfile.TemporaryDirectory() as tmp:
+        model = nn.Linear(4, 4)
+        optimizer = optim.AdamW(model.parameters(), lr=1e-2)
+        # One real step so the optimizer actually has state (Adam's momentum
+        # buffers) to resume, not just its freshly-initialized empty state.
+        loss = model(torch.ones(1, 4)).sum()
+        loss.backward()
+        optimizer.step()
+
+        args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote=None)
+        path = Path(tmp) / "best.pt"
+        save_checkpoint(path, model, optimizer, args, step=123, top1=0.42, top3=0.7)
+
+        fresh_model = nn.Linear(4, 4)
+        fresh_optimizer = optim.AdamW(fresh_model.parameters(), lr=1e-2)
+        assert not torch.equal(fresh_model.weight, model.weight)  # different random init
+
+        ckpt = torch.load(path, map_location="cpu")
+        fresh_model.load_state_dict(ckpt["model_state_dict"])
+        fresh_optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+
+        assert torch.equal(fresh_model.weight, model.weight)
+        assert ckpt["step"] == 123
+        assert ckpt["val_top1"] == 0.42
+        # Adam's per-parameter step count is real optimizer state, not just
+        # weights -- confirms load_state_dict actually restored it.
+        resumed_state = next(iter(fresh_optimizer.state_dict()["state"].values()))
+        assert resumed_state["step"] == 1
 
 
 if __name__ == "__main__":
@@ -104,4 +140,5 @@ if __name__ == "__main__":
     test_two_epochs_give_different_orders()
     test_shard_dataset_combines_multiple_directories()
     test_save_checkpoint_survives_missing_rclone()
+    test_resuming_restores_model_and_optimizer_state()
     print("OK - all train checks passed")

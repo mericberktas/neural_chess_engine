@@ -14,6 +14,10 @@ Pass --drive-remote gdrive:chess_bot/checkpoints/run1/ to rclone-sync every
 new-best checkpoint off the instance as it's saved (requires rclone installed
 and configured -- see docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md).
 
+Pass --resume-from <checkpoint>.pt to continue training if a run was cut
+short (pod died, watchdog fired, etc.): restores model weights, optimizer
+state, and the step/best-val_top1 counters from that checkpoint.
+
 Regularization: AdamW (--weight-decay, default 0.01) instead of plain Adam,
 and label smoothing on both heads' cross-entropy (--label-smoothing, default
 0.1, 0 disables it). Dropout is a model hyperparameter (--dropout, already
@@ -126,11 +130,14 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device: torch.device, max
     return top1_correct / n, top3_correct / n
 
 
-def save_checkpoint(path: Path, model: nn.Module, args: argparse.Namespace, step: int, top1: float, top3: float) -> None:
+def save_checkpoint(
+    path: Path, model: nn.Module, optimizer: torch.optim.Optimizer, args: argparse.Namespace, step: int, top1: float, top3: float,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
             "model_args": {name: getattr(args, name) for name in MODEL_ARG_NAMES},
             "step": step,
             "val_top1": top1,
@@ -184,6 +191,13 @@ def parse_args() -> argparse.Namespace:
         "--drive-remote", default=None,
         help="If set (e.g. gdrive:chess_bot/checkpoints/run1/), rclone-copy every new-best checkpoint here as it's saved",
     )
+    parser.add_argument(
+        "--resume-from", type=Path, default=None,
+        help="Resume from a checkpoint saved by this script: restores model weights, optimizer state, "
+             "step count and best val_top1 (optimizer state is skipped with a warning if the checkpoint "
+             "predates it). Training then continues from that step count; the epoch loop still restarts "
+             "at epoch 0 since shards are reshuffled each run anyway.",
+    )
     return parser.parse_args()
 
 
@@ -207,8 +221,19 @@ def main() -> None:
     ckpt_path = args.out_dir / "best.pt"
 
     best_top1 = -1.0
-    checks_without_improvement = 0
     step = 0
+    if args.resume_from:
+        ckpt = torch.load(args.resume_from, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        else:
+            print(f"  WARNING: {args.resume_from} has no optimizer state (older checkpoint) -- optimizer starts fresh", file=sys.stderr)
+        step = ckpt["step"]
+        best_top1 = ckpt["val_top1"]
+        print(f"resumed from {args.resume_from} at step {step}, best val_top1 {best_top1:.4f}", file=sys.stderr)
+
+    checks_without_improvement = 0
     start = time.time()
     stop = False
     for epoch in range(args.epochs):
@@ -236,7 +261,7 @@ def main() -> None:
                 if top1 > best_top1:
                     best_top1 = top1
                     checks_without_improvement = 0
-                    save_checkpoint(ckpt_path, model, args, step, top1, top3)
+                    save_checkpoint(ckpt_path, model, optimizer, args, step, top1, top3)
                     print(f"  new best checkpoint -> {ckpt_path}", file=sys.stderr)
                 else:
                     checks_without_improvement += 1
@@ -255,7 +280,7 @@ def main() -> None:
     if best_top1 < 0:  # never hit a val-interval boundary (e.g. max-steps < val-interval)
         top1, top3 = evaluate(model, val_loader, device, args.val_batches)
         best_top1 = top1
-        save_checkpoint(ckpt_path, model, args, step, top1, top3)
+        save_checkpoint(ckpt_path, model, optimizer, args, step, top1, top3)
         print(f"final val_top1 {top1:.4f} val_top3 {top3:.4f}, checkpoint -> {ckpt_path}", file=sys.stderr)
 
     writer.close()

@@ -12,6 +12,13 @@ Format:
 - Sıradaki adım / blocker: varsa
 ```
 
+## 2026-09-23 — train.py'ye --resume-from eklendi; run3 (8 ay) canlı eğitimde
+
+- Aşama: Aşama 2 — Model & Eğitim (altyapı sağlamlaştırma) + Aşama 6 (canlı run3 koşusu izleniyor)
+- Yapıldı: `src/train.py`'a `--resume-from <checkpoint>.pt` eklendi — model ağırlıkları, optimizer state (`AdamW`'ın momentum buffer'ları), step sayacı ve best val_top1'i geri yükleyip kaldığı yerden devam ediyor. `save_checkpoint` artık `optimizer_state_dict`'i de kaydediyor (eski formattaki checkpoint'lerde bu alan yoksa uyarı basıp optimizer'ı sıfırdan başlatıyor, hata vermiyor). Epoch döngüsü yine 0'dan başlıyor (shard sırası zaten her koşuda karışıyor, tam epoch/step pozisyonu kurtarmaya çalışmadık — bilinçli basitleştirme). `tests/test_train.py`'a yeni test eklendi (`test_resuming_restores_model_and_optimizer_state`), tüm suite yeşil. Bunu ekleme sebebi: bugün aynı koşu içinde pod'u iki kez (biri kendi hatam, biri kazara tetiklenen self-terminate) kaybettik, resume mekanizması olmadan her seferinde sıfırdan başlamak zorunda kalıyorduk.
+- Ayrıca bugünkü operasyonel olay: 8 aylık + regülarizasyonlu `run3` koşusunu başlatırken (a) commit'lenmiş ama henüz push'lanmamış `runpod_overnight.sh` değişikliğini pod'un eski haliyle clone'laması yüzünden yanlışlıkla `run2`'nin checkpoint'ini (45.35% val_top1) 2 kez üzerine yazdık — ikisinde de Google Drive'ın revision history'sinden (Drive API, rclone'un zaten yetkili olduğu token ile) eski hali indirip doğrulayıp (`val_top1: 0.4535` eşleşti) geri yükledik, veri kaybı olmadı. (b) Yanlış ilk koşuyu durdururken train.py'ı öldürdüm ama onun ebeveyn script süreci hayatta kalmış, train.py "bitince" script normal akışına devam edip pod'u KENDİSİ sonlandırdı (self-terminate mekanizması amacına uygun ama yanlış zamanda tetiklendi) — yeni pod açıp temiz şekilde yeniden başlatıldı. Ders: push etmeden pod'a clone/pull yaptırmamak, ve yarım kalan bir işlemi öldürürken sadece alt süreci değil ilgili tüm ebeveyn/script sürecini hesaba katmak gerekiyor.
+- Sıradaki adım / blocker: run3 (8 ay, regülarizasyonlu) şu an RunPod'da (pod id `53707x7fwr9rul`) sağlıklı çalışıyor, ~step 4000+, val_top1 düzenli yükseliyor. `--resume-from` bu koşuya uygulanmadı (zaten çalışıyor, kodu değiştirmek çalışan process'i etkilemiyor) — sadece gelecekteki/kesintiye uğrayan koşularda kullanılacak. Commit'lendi, henüz push edilmedi.
+
 ## 2026-09-23 — Canlı maçlardan görülen iki çizim (draw) bug'ı düzeltildi: tekrar + pat
 
 - Aşama: Aşama 6 — Dağıtım (canlı Lichess botu izleme/düzeltme)
