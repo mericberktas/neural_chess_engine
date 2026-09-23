@@ -22,7 +22,9 @@
 #   bash scripts/runpod_overnight.sh
 #
 # Configurable via env vars (all optional, shown with defaults):
-#   REPO_URL, WORKDIR, RUN_NAME, TRAIN_MONTHS (space-separated), TEST_MONTH,
+#   REPO_URL, WORKDIR, GIT_BRANCH (default main -- e.g. set to
+#   run5-rich-encoding to run an experiment branch without a manual
+#   `git checkout` step), RUN_NAME, TRAIN_MONTHS (space-separated), TEST_MONTH,
 #   TRAIN_MAX_GAMES, TEST_MAX_GAMES, EPOCHS, PATIENCE, WATCHDOG_HOURS,
 #   RESUME_FROM_REMOTE (an rclone path to a checkpoint, e.g.
 #   gdrive:chess_bot/checkpoints/run3/best.pt -- fetched and passed to
@@ -46,6 +48,7 @@ set -uo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/mericberktas/neural_chess_engine.git}"
 WORKDIR="${WORKDIR:-/workspace/neural_chess_engine}"
+GIT_BRANCH="${GIT_BRANCH:-main}"
 RUN_NAME="${RUN_NAME:-run4}"
 TRAIN_MONTHS="${TRAIN_MONTHS:-2026-08 2026-07 2026-06 2026-05 2026-04 2026-03 2026-02 2026-01}"
 TEST_MONTH="${TEST_MONTH:-2025-12}"
@@ -82,11 +85,12 @@ echo "RUNPOD_POD_ID=${RUNPOD_POD_ID:-<not set>}"
 WATCHDOG_PID=$!
 
 if [ -d "$WORKDIR/.git" ]; then
-    (cd "$WORKDIR" && git pull)
+    (cd "$WORKDIR" && git fetch origin && git checkout "$GIT_BRANCH" && git pull origin "$GIT_BRANCH")
 else
-    git clone "$REPO_URL" "$WORKDIR"
+    git clone --branch "$GIT_BRANCH" "$REPO_URL" "$WORKDIR"
 fi
 cd "$WORKDIR" || { echo "!! cd $WORKDIR failed"; terminate_self; exit 1; }
+echo "== on branch $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD) =="
 
 echo "== python deps (skipping torch -- already in the image) =="
 grep -v '^torch$' requirements.txt > /tmp/requirements-no-torch.txt

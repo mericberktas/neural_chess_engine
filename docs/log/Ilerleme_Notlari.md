@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-23 — `runpod_overnight.sh`'a `GIT_BRANCH` parametresi
+
+- Aşama: Altyapı
+- Neden: run5-rich-encoding'i pod'da çalıştırmak için elle `git checkout run5-rich-encoding` demek gerekiyordu — tam da bugün birkaç kez yaşadığımız "pod'da yanlış kod çalışıyor" hatasının bir başka versiyonu. Kullanıcının fikri: branch adını da parametre yapalım.
+- Yapıldı: `GIT_BRANCH` env var'ı eklendi (varsayılan `main`, geriye dönük uyumlu). Taze clone'da `git clone --branch "$GIT_BRANCH"`; repo zaten varsa `git fetch origin && git checkout "$GIT_BRANCH" && git pull origin "$GIT_BRANCH"`. Clone/checkout sonrası hangi branch/commit'te olduğunu log'a basan bir satır eklendi (`== on branch ... @ ... ==`) — bir daha sessizce yanlış kod çalışmasın diye.
+- Doğrulama: Gerçek GitHub repo'suna karşı lokalde iki senaryo da test edildi (taze `--branch run5-rich-encoding` clone'u doğru branch'i çekti; var olan bir clone'da `GIT_BRANCH=main` ile fetch+checkout+pull doğru şekilde main'e geçti) — pod'a hiç dokunulmadı. `bash -n` ile syntax doğrulandı.
+- Sıradaki adım: run5 pod'u açılırken artık `GIT_BRANCH=run5-rich-encoding` tek satırlık env var olarak verilecek.
+
 ## 2026-09-23 — `runpod_overnight.sh`: pod'a önce Drive'dan çekmeyi dene, sonra Lichess'e düş
 
 - Aşama: Altyapı
