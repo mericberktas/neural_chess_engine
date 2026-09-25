@@ -57,10 +57,40 @@ def test_last_move_planes_empty_at_start_and_set_after_a_move():
     assert t[20, to_rank, to_file] == 1 and t[20].sum() == 1
 
 
+def test_see_risk_plane():
+    # Nc2 attacks Black Qd4 (a knight move); Qd4 doesn't attack back (not a
+    # queen-line), so it's cleanly undefended -> full value lost.
+    undefended = chess.Board("4k3/8/8/8/3q4/8/2N5/4K3 w - - 0 1")
+    t = board_to_tensor(undefended)
+    rank, file = divmod(chess.D4, 8)
+    assert t[21, rank, file] == 9
+    rank, file = divmod(chess.C2, 8)
+    assert t[21, rank, file] == 0  # attacker itself isn't attacked back
+
+    # Nc3 attacks Black Qd5, defended by the e6 pawn -> queen_value - knight_value.
+    defended = chess.Board("4k3/8/4p3/3q4/8/2N5/8/4K3 w - - 0 1")
+    t = board_to_tensor(defended)
+    rank, file = divmod(chess.D5, 8)
+    assert t[21, rank, file] == 9 - 3
+
+    # Nc3 vs Nd5, defended by the e6 pawn -- an even trade nets to 0, floored.
+    even_trade = chess.Board("4k3/8/4p3/3n4/8/2N5/8/4K3 w - - 0 1")
+    t = board_to_tensor(even_trade)
+    rank, file = divmod(chess.D5, 8)
+    assert t[21, rank, file] == 0
+
+    # White king in check from a rook -- kings are never flagged, even under attack.
+    king_in_check = chess.Board("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1")
+    t = board_to_tensor(king_in_check)
+    rank, file = divmod(chess.E1, 8)
+    assert t[21, rank, file] == 0
+
+
 if __name__ == "__main__":
     test_startpos_planes()
     test_en_passant_plane()
     test_move_to_indices()
     test_mobility_plane_startpos()
     test_last_move_planes_empty_at_start_and_set_after_a_move()
+    test_see_risk_plane()
     print("OK - all encoding checks passed")
