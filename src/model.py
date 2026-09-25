@@ -1,24 +1,66 @@
 """Encoder-only transformer policy network: board -> (from-square, to-square) logits.
 
-Consumes exactly the (21,8,8) board tensors produced by encoding.board_to_tensor
+Consumes exactly the (22,8,8) board tensors produced by encoding.board_to_tensor
 (see build_dataset.py for the shard format). Each of the 64 squares becomes one
 token (piece type+color embedding + learned per-square positional embedding +
 a mobility-flag embedding, from encoding.py's channel 18); side-to-move, the
 four castling rights, en-passant, and the previous move's from/to squares
 become eight extra tokens (a shared "flag" embedding for 0/1 plus a
 per-token-kind embedding; the en-passant and last-move tokens also reuse the
-square positional embedding for their target square). Two linear heads turn
-each of the 64 board-token outputs into one from-square and one to-square
-logit.
+square positional embedding for their target square). A Geometric Attention
+Bias (GAB, run6) reads the raw board tensor and produces a dynamic per-head
+64x64 additive bias fed into every encoder layer's self-attention (via
+nn.TransformerEncoder's mask= argument), on top of the fixed token embeddings.
+Two linear heads turn each of the 64 board-token outputs into one from-square
+and one to-square logit.
 """
 import chess
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from encoding import NUM_CHANNELS
+
+# Confirmed bug (torch 2.14.0+cpu): nn.TransformerEncoder's fused eval+no_grad
+# ("fast path") kernel silently produces NaN output when given a float
+# attn_mask (our GAB bias) -- the plain/slow path (training mode, or any mode
+# with grad tracking) is correct. Since inference (engine.py) and validation
+# (train.py) both run under eval()+no_grad(), this must be disabled globally
+# or every masked forward pass in eval mode returns garbage. See
+# tests/test_model.py::test_encoder_mask_survives_eval_and_no_grad.
+if hasattr(torch.backends, "mha"):
+    torch.backends.mha.set_fastpath_enabled(False)
 
 NUM_SQUARES = 64
 NUM_PIECE_CLASSES = 13  # 0 = empty, 1-6 = white P N B R Q K, 7-12 = black P N B R Q K
 NUM_EXTRA_TOKENS = 8  # side-to-move, castle WK/WQ/BK/BQ, en-passant, last-move-from, last-move-to
+
+
+class GeometricAttentionBias(nn.Module):
+    """Board-state-conditioned additive attention bias (Chessformer-style
+    GAB, arXiv:2605.19091). Compresses the whole raw board tensor to a small
+    per-head "template mixture", then expands it through a single 64x64
+    projection SHARED across all heads (broadcast, not one projection per
+    head) -- keeping the added parameter count small (~349K at the
+    defaults) instead of ~4M+ for a per-head-dense version.
+    """
+
+    def __init__(self, in_channels: int, nhead: int, d_compress: int = 128, d_templates: int = 32):
+        super().__init__()
+        self.nhead = nhead
+        self.d_templates = d_templates
+        self.compress_fc = nn.Linear(in_channels * NUM_SQUARES, d_compress)
+        self.head_proj = nn.Linear(d_compress, nhead * d_templates)
+        self.template_bank = nn.Linear(d_templates, NUM_SQUARES * NUM_SQUARES)
+
+    def forward(self, boards: torch.Tensor) -> torch.Tensor:
+        """boards: (B, in_channels, 8, 8) float -> (B, nhead, 64, 64)."""
+        batch = boards.shape[0]
+        z = F.relu(self.compress_fc(boards.reshape(batch, -1)))
+        w = self.head_proj(z).reshape(batch, self.nhead, self.d_templates)
+        bias = self.template_bank(w)  # (B, nhead, 4096), template_bank shared across heads
+        return bias.reshape(batch, self.nhead, NUM_SQUARES, NUM_SQUARES)
 
 
 class ChessTransformer(nn.Module):
@@ -32,11 +74,13 @@ class ChessTransformer(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
+        self.nhead = nhead
         self.piece_embed = nn.Embedding(NUM_PIECE_CLASSES, d_model)
         self.square_pos_embed = nn.Embedding(NUM_SQUARES, d_model)
         self.extra_type_embed = nn.Embedding(NUM_EXTRA_TOKENS, d_model)
         self.flag_embed = nn.Embedding(2, d_model)
         self.mobility_embed = nn.Embedding(2, d_model)
+        self.gab = GeometricAttentionBias(in_channels=NUM_CHANNELS, nhead=nhead)
 
         layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
@@ -48,7 +92,7 @@ class ChessTransformer(nn.Module):
         self.to_head = nn.Linear(d_model, 1)
 
     def forward(self, boards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """boards: (B, 21, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
+        """boards: (B, NUM_CHANNELS, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
         boards = boards.float()
         batch = boards.shape[0]
         device = boards.device
@@ -107,7 +151,14 @@ class ChessTransformer(nn.Module):
         )  # (B, 8, d_model)
 
         tokens = torch.cat([board_tok, extra_tok], dim=1)  # (B, 72, d_model)
-        encoded = self.encoder(tokens)
+        total_tokens = NUM_SQUARES + NUM_EXTRA_TOKENS
+
+        bias64 = self.gab(boards)  # (B, nhead, 64, 64)
+        full_bias = boards.new_zeros(batch, self.nhead, total_tokens, total_tokens)
+        full_bias[:, :, :NUM_SQUARES, :NUM_SQUARES] = bias64  # extra tokens get no bias
+        mask = full_bias.reshape(batch * self.nhead, total_tokens, total_tokens)
+
+        encoded = self.encoder(tokens, mask=mask)
         board_encoded = encoded[:, :NUM_SQUARES]  # (B, 64, d_model)
 
         from_logits = self.from_head(board_encoded).squeeze(-1)
