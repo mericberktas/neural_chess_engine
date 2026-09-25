@@ -6,7 +6,7 @@ under-defended one, where the opponent just takes it for nothing).
 """
 import chess
 
-_PIECE_VALUES = {
+PIECE_VALUES = {
     chess.PAWN: 1,
     chess.KNIGHT: 3,
     chess.BISHOP: 3,
@@ -49,8 +49,8 @@ def hangs_material(board: chess.Board, move: chess.Move) -> bool:
     if not attackers:
         return False
 
-    piece_value = _PIECE_VALUES[piece.piece_type]
-    cheapest_attacker = min(_PIECE_VALUES[after.piece_at(sq).piece_type] for sq in attackers)
+    piece_value = PIECE_VALUES[piece.piece_type]
+    cheapest_attacker = min(PIECE_VALUES[after.piece_at(sq).piece_type] for sq in attackers)
 
     defenders = after.attackers(mover, move.to_square)
     recapture_value = cheapest_attacker if defenders else 0
@@ -62,9 +62,9 @@ def hangs_material(board: chess.Board, move: chess.Move) -> bool:
 def _captured_value(board: chess.Board, move: chess.Move) -> int:
     """Value of whatever `move` captures on `board`, 0 if it's not a capture."""
     if board.is_en_passant(move):
-        return _PIECE_VALUES[chess.PAWN]
+        return PIECE_VALUES[chess.PAWN]
     captured = board.piece_at(move.to_square)
-    return _PIECE_VALUES[captured.piece_type] if captured is not None else 0
+    return PIECE_VALUES[captured.piece_type] if captured is not None else 0
 
 
 def pick_safe_move(board: chess.Board, candidates: list[chess.Move]) -> tuple[chess.Move, int]:
