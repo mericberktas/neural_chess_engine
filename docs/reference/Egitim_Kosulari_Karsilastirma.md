@@ -45,4 +45,6 @@ Aksiyon önerisi: Bu analiz koda dönüştürülmedi, sadece belgelendi. Sırada
 
 ## Sıradaki adım
 
-16 aylık veri havuzu (2025-04→2026-08) Drive'da harvest ediliyor/edildi (`gdrive:chess_bot/filtered_pgn/`) — `NUM_MONTHS=16` ile bir sonraki koşuda kullanılabilir. Henüz bir eğitim koşusu başlatılmadı.
+16-17 aylık veri havuzu (2025-04→2026-08) Drive'da harvest edildi (`gdrive:chess_bot/filtered_pgn/`) — `NUM_MONTHS=16` ile kullanılabilir.
+
+`run6-gab-see` branch'inde (run5'ten türetildi) girdiye bir SEE-riski kanalı eklendi (21→22 kanal) ve Chessformer'ın Geometric Attention Bias'ı (dinamik, tahta-durumuna-bağlı attention bias'ı) implemente edildi — ayrıntı için [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'nin 2026-09-25 notuna bakın. Tüm lokal testler yeşil; henüz bir pod'da eğitilmedi (mimari değişikliği yüzünden sıfırdan eğitim gerekiyor, `--resume-from` mümkün değil).

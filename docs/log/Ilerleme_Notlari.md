@@ -2,6 +2,17 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-25 — GAB + SEE kanalı implemente edildi (run6, `run6-gab-see` branch'i)
+
+- Aşama: Aşama 2 — Model & Eğitim (run6, henüz pod'da çalıştırılmadı)
+- Plan dosyasındaki tasarımın (GAB + SEE-into-attention, run5'in %50.18'de platoladığı sonrası) tamamı koda döküldü, sırayla 3 commit:
+  1. `failsafe.py`: `_PIECE_VALUES` → public `PIECE_VALUES` (davranış değişikliği yok, sadece `encoding.py`'ın tabloyu tekrar tanımlamaması için).
+  2. `encoding.py`: yeni kanal 21 — SEE riski (0-9 aralığı, `_see_risk()`, mevcut karedeki bir taşın şu an alınırsa net kaybı). `NUM_CHANNELS` 21→22. `failsafe.hangs_material`'ın tersine, bu bir HAMLE değil, MEVCUT tahtanın dolu bir karesini değerlendiriyor.
+  3. `model.py`: `GeometricAttentionBias` sınıfı (Chessformer, arXiv:2605.19091) — ham 22 kanallı girdiden dinamik bir (B, nhead, 64, 64) bias üretip `nn.TransformerEncoder(tokens, mask=...)` ile her katmana besleniyor. Tek paylaşılan `template_bank` projeksiyonu (head başına ayrı değil) parametreyi ~349K'da tutuyor (gerçek boyut ölçümü: 348,544, toplam 5.11M modelin %6.8'i — planın tahminine çok yakın).
+- **Canlı bulunan gerçek bug (plan'da riskli alan olarak zaten işaretlenmişti):** `nn.TransformerEncoder`'ın `eval()+no_grad()` altındaki "fast path"i (torch 2.14.0+cpu), float `attn_mask` verildiğinde **sessizce NaN üretiyor** — aynı çağrı train modunda veya grad-tracking açıkken doğru sonuç veriyor. `engine.py` (inference) ve `train.py`'ın val döngüsü ikisi de `eval()+no_grad()` altında çalıştığı için bu, gerçek koşuda sessizce her val/inference adımını bozacaktı. Fix: `torch.backends.mha.set_fastpath_enabled(False)`, `model.py` import edilirken global olarak uygulanıyor. Kalıcı regresyon testi eklendi (`test_encoder_mask_survives_eval_and_no_grad`) — gelecekte bir torch güncellemesi bunu sessizce bozarsa yakalasın.
+- Testler: `test_see_risk_plane` (encoding), `test_gab_output_shape`/`test_gab_bias_is_dynamic`/`test_encoder_mask_survives_eval_and_no_grad` (model) eklendi, hepsi + mevcut tüm testler (`test_encoding.py`, `test_failsafe.py`, `test_model.py`, `test_train.py`) yeşil. Gerçek boyutlu (`d_model=256`, 6 katman) manuel duman testi de finite/doğru şekilli çıktı verdi.
+- Sıradaki adım: Henüz hiçbir şey push'lanmadı (kural: mask-handling doğrulaması bitmeden pod parası harcanmaz — zaten doğrulandı). Sıradaki adım: 16-17 aylık Drive'daki harvest'ten sıfırdan 22 kanallı veri encode edip pod'da run6'yı başlatmak (`--resume-from` mümkün değil, GAB'ın ağırlıkları run5'in checkpoint'inde yok — run4→run5 geçişiyle aynı durum).
+
 ## 2026-09-23 — run5 canlı eğitimde: iki gerçek bug bulunup düzeltildi (`main`'e backport)
 
 - Aşama: Altyapı + Aşama 2 (run5, `run5-rich-encoding` branch'i, canlı pod)
