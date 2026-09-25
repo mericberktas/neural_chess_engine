@@ -151,15 +151,23 @@ def save_checkpoint(
         # without losing progress if the instance itself dies. A sync
         # failure (missing rclone binary, transient network blip, bad
         # remote) must not kill training -- log it and move on, the next
-        # new-best checkpoint will retry.
+        # new-best checkpoint will retry. Real incident (run6, 2026-09-25):
+        # rclone hung indefinitely mid-upload (root cause unconfirmed --
+        # possibly a stalled OAuth token refresh right after a fresh
+        # `rclone config`) with no timeout on this call, silently blocking
+        # the entire training loop for 10+ minutes until manually killed.
         try:
-            result = subprocess.run(["rclone", "copy", str(path), args.drive_remote], capture_output=True, text=True)
+            result = subprocess.run(
+                ["rclone", "copy", str(path), args.drive_remote], capture_output=True, text=True, timeout=180,
+            )
             if result.returncode != 0:
                 print(f"  WARNING: rclone sync failed ({result.returncode}): {result.stderr.strip()[:300]}", file=sys.stderr)
             else:
                 print(f"  synced to {args.drive_remote}", file=sys.stderr)
         except OSError as e:
             print(f"  WARNING: rclone sync failed to start: {e}", file=sys.stderr)
+        except subprocess.TimeoutExpired:
+            print("  WARNING: rclone sync timed out after 180s -- continuing without backup", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
