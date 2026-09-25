@@ -103,6 +103,30 @@ def test_save_checkpoint_survives_missing_rclone():
         train.subprocess.run = real_run
 
 
+def test_save_checkpoint_survives_hung_rclone():
+    # Regression test for a real incident (run6, 2026-09-25): rclone copy
+    # hung indefinitely mid-upload with no timeout on the subprocess.run
+    # call, silently blocking the entire training loop for 10+ minutes
+    # until manually killed. subprocess.run is patched to simulate a
+    # timeout rather than relying on an actually-hanging rclone.
+    real_run = train.subprocess.run
+
+    def fake_run(*a, **k):
+        raise train.subprocess.TimeoutExpired(cmd=a[0], timeout=k.get("timeout"))
+
+    train.subprocess.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = nn.Linear(4, 4)
+            optimizer = optim.AdamW(model.parameters())
+            args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:some/fake/remote/")
+            path = Path(tmp) / "checkpoints" / "best.pt"
+            save_checkpoint(path, model, optimizer, args, step=1, top1=0.0, top3=0.0)  # must not hang or raise
+            assert path.exists()
+    finally:
+        train.subprocess.run = real_run
+
+
 def test_resuming_restores_model_and_optimizer_state():
     # Exercises the same load_state_dict calls main()'s --resume-from block
     # makes, without needing to invoke the CLI end-to-end.
@@ -141,5 +165,6 @@ if __name__ == "__main__":
     test_two_epochs_give_different_orders()
     test_shard_dataset_combines_multiple_directories()
     test_save_checkpoint_survives_missing_rclone()
+    test_save_checkpoint_survives_hung_rclone()
     test_resuming_restores_model_and_optimizer_state()
     print("OK - all train checks passed")
