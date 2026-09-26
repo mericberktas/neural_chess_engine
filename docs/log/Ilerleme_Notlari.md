@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-26 — Encode edilmiş tensor'lar da Drive'a cache'leniyor artık
+
+- Aşama: Altyapı — `filtered_pgn` cache'inin (ham PGN) yanına, `TENSOR_REMOTE` (varsayılan `gdrive:chess_bot/tensors/`) altında `RUN_NAME`'e göre versiyonlu bir encode edilmiş tensor cache'i eklendi. Kullanıcının önerisi: build_dataset.py'ın CPU-bound encode adımı (16 ay için ~70 dakika, pahalı GPU pod'unu boşuna bekletiyor) her pod'da sıfırdan tekrarlanmasın.
+- `runpod_overnight.sh`'ın hem train-ay döngüsü hem test-ay bloğu artık önce `gdrive:chess_bot/tensors/$RUN_NAME/<ay>/`'de hazır shard var mı diye bakıyor (`remote_has_files` helper'ı) — varsa indirip `build_dataset.py`'ı hiç çağırmıyor, yoksa eskisi gibi build edip sonuçları oraya yüklüyor. `RUN_NAME`'e göre anahtarlama, kanal şeması değiştiğinde (18→21→22) otomatik olarak yeni bir cache alanı açılmasını sağlıyor — eskiyi bozmuyor.
+- Bu run6'nın ÜÇÜNCÜ pod denemesinde faydası kesin: eğer bu pod da ölerse, dördüncü denemede 16 aylık build (~70dk) tamamen atlanacak.
+- Doğrulama: cache hit/miss dallanma mantığı, sahte bir `rclone` fonksiyonuyla izole edilmiş bir bash test scriptinde doğrulandı. `bash -n` ile syntax-check edildi.
+- Sıradaki adım: pod'u tekrar açıp step 56000'deki checkpoint'ten devam ettirmek.
+
 ## 2026-09-26 — run6 canlı denemesinde bulunan 3 altyapı hatası düzeltildi
 
 - Aşama: Altyapı (run6'nın iki canlı pod denemesi sırasında yaşanan olaylardan çıkan kalıcı düzeltmeler)

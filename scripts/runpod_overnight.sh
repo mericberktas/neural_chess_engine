@@ -47,7 +47,9 @@
 #   gdrive:chess_bot/filtered_pgn/ -- see scripts/harvest_filtered_pgn.py),
 #   NUM_MONTHS (if set, overrides TRAIN_MONTHS/TEST_MONTH: picks the N most
 #   recent months available in FILTERED_PGN_REMOTE as train, the next-oldest
-#   one as test)
+#   one as test), TENSOR_REMOTE (default gdrive:chess_bot/tensors/ -- caches
+#   encoded shards per RUN_NAME/month so a re-run of the same run skips the
+#   CPU-bound build_dataset.py step entirely on a cache hit)
 #
 # Per-month data comes from FILTERED_PGN_REMOTE when a month's file is
 # there (fast: a few-MB rclone copy, no re-scanning Lichess) and falls back
@@ -87,6 +89,7 @@ PATIENCE="${PATIENCE:-4}"
 WATCHDOG_HOURS="${WATCHDOG_HOURS:-8}"
 RESUME_FROM_REMOTE="${RESUME_FROM_REMOTE-gdrive:chess_bot/checkpoints/run3/best.pt}"
 FILTERED_PGN_REMOTE="${FILTERED_PGN_REMOTE:-gdrive:chess_bot/filtered_pgn/}"
+TENSOR_REMOTE="${TENSOR_REMOTE:-gdrive:chess_bot/tensors/}"
 NUM_MONTHS="${NUM_MONTHS:-}"
 KEY_FILE=/root/.runpod_key
 
@@ -160,36 +163,61 @@ fetch_month_source() {
     fi
 }
 
+# True if `rclone lsf $1` lists at least one file -- used to check a tensor
+# cache path for a hit without failing on a merely-empty/missing remote dir
+# (rclone lsf on a nonexistent path just prints nothing, exit 0).
+remote_has_files() {
+    [ -n "$(rclone lsf "$1" 2>/dev/null)" ]
+}
+
 TRAIN_DIRS=()
 VAL_DIRS=()
 for month in $TRAIN_MONTHS; do
-    SOURCE=$(fetch_month_source "$month")
-    echo "== train data: $month (source: $SOURCE) =="
-    python src/build_dataset.py \
-        --source "$SOURCE" \
-        --out-dir "data/train_${month}" --split train --max-games "$TRAIN_MAX_GAMES"
+    TENSOR_PATH="${TENSOR_REMOTE}${RUN_NAME}/${month}/"
+    if remote_has_files "$TENSOR_PATH"; then
+        echo "== train data: $month (cached tensors from $TENSOR_PATH) =="
+        rclone copy "$TENSOR_PATH" "data/train_${month}/"
+    else
+        SOURCE=$(fetch_month_source "$month")
+        echo "== train data: $month (source: $SOURCE) =="
+        python src/build_dataset.py \
+            --source "$SOURCE" \
+            --out-dir "data/train_${month}" --split train --max-games "$TRAIN_MAX_GAMES"
+        timeout 300 rclone copy "data/train_${month}/" "$TENSOR_PATH" || echo "!! could not cache tensors for $month to $TENSOR_PATH"
+    fi
     TRAIN_DIRS+=("data/train_${month}/train")
     VAL_DIRS+=("data/train_${month}/val")
 done
 
-TEST_SOURCE=$(fetch_month_source "$TEST_MONTH")
-echo "== held-out test month: $TEST_MONTH (source: $TEST_SOURCE) =="
-# Observed twice (2026-09-23): when a harvested source file has far more
-# games than TEST_MAX_GAMES needs, build_dataset.py's multiprocessing.Pool
-# is left with a big prefetch backlog at the --max-games break, and Pool
-# cleanup on exit can hang forever -- a known class of Python
-# multiprocessing issue, not specific to this data. Doesn't happen for
-# train months since their harvested file size matches TRAIN_MAX_GAMES
-# closely. test_full isn't needed for training itself (val comes from each
-# train month's own val/ split) so a stuck/failed test build must not be
-# allowed to hang an unattended run -- timeout, then a belt-and-suspenders
-# pkill since timeout alone doesn't reliably reach forked worker processes.
-if ! timeout 600 python src/build_dataset.py \
-    --source "$TEST_SOURCE" \
-    --out-dir data/test_full --split test --max-games "$TEST_MAX_GAMES"; then
-    echo "!! test month build timed out or failed -- continuing without it (not needed for training)"
+TEST_TENSOR_PATH="${TENSOR_REMOTE}${RUN_NAME}/test_${TEST_MONTH}/"
+if remote_has_files "$TEST_TENSOR_PATH"; then
+    echo "== held-out test month: $TEST_MONTH (cached tensors from $TEST_TENSOR_PATH) =="
+    rclone copy "$TEST_TENSOR_PATH" "data/test_full/"
+else
+    TEST_SOURCE=$(fetch_month_source "$TEST_MONTH")
+    echo "== held-out test month: $TEST_MONTH (source: $TEST_SOURCE) =="
+    # Observed twice (2026-09-23): when a harvested source file has far more
+    # games than TEST_MAX_GAMES needs, build_dataset.py's multiprocessing.Pool
+    # is left with a big prefetch backlog at the --max-games break, and Pool
+    # cleanup on exit can hang forever -- a known class of Python
+    # multiprocessing issue, not specific to this data. Doesn't happen for
+    # train months since their harvested file size matches TRAIN_MAX_GAMES
+    # closely. Fixed at the source in build_dataset.py itself (terminate()
+    # + os._exit(), no join) -- timeout+pkill kept here as defense in depth
+    # since that fix couldn't be verified against the exact Linux/fork
+    # conditions that triggered this. test_full isn't needed for training
+    # itself (val comes from each train month's own val/ split) so a
+    # stuck/failed test build must not be allowed to hang an unattended run.
+    if ! timeout 600 python src/build_dataset.py \
+        --source "$TEST_SOURCE" \
+        --out-dir data/test_full --split test --max-games "$TEST_MAX_GAMES"; then
+        echo "!! test month build timed out or failed -- continuing without it (not needed for training)"
+    fi
+    pkill -9 -f "src/build_dataset.py --source $TEST_SOURCE" 2>/dev/null || true
+    if [ -d data/test_full ]; then
+        timeout 300 rclone copy data/test_full/ "$TEST_TENSOR_PATH" || echo "!! could not cache test tensors to $TEST_TENSOR_PATH"
+    fi
 fi
-pkill -9 -f "src/build_dataset.py --source $TEST_SOURCE" 2>/dev/null || true
 
 RESUME_ARGS=()
 if [ -n "$RESUME_FROM_REMOTE" ]; then
