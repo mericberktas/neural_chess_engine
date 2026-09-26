@@ -7,8 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import harvest_filtered_pgn
 from build_dataset import iter_raw_games
-from harvest_filtered_pgn import harvest
+from harvest_filtered_pgn import harvest, sync_to_drive
 
 # Same three-game fixture as tests/test_build_dataset.py: only the first game
 # (blitz, both players in-band) should survive the filter.
@@ -104,8 +105,28 @@ def test_harvested_file_is_correctly_re_splittable_into_separate_games():
         assert "1. e4" in re_split[0][1]
 
 
+def test_sync_to_drive_survives_hung_rclone():
+    # Same class of real incident as test_train.py's
+    # test_save_checkpoint_survives_hung_rclone (run6, 2026-09-25): rclone
+    # copy hung indefinitely with no timeout, blocking the caller forever.
+    real_run = harvest_filtered_pgn.subprocess.run
+
+    def fake_run(*a, **k):
+        raise harvest_filtered_pgn.subprocess.TimeoutExpired(cmd=a[0], timeout=k.get("timeout"))
+
+    harvest_filtered_pgn.subprocess.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "2026-08.pgn"
+            path.write_text("dummy", encoding="utf-8")
+            sync_to_drive(path, "gdrive:some/fake/remote/")  # must not hang or raise
+    finally:
+        harvest_filtered_pgn.subprocess.run = real_run
+
+
 if __name__ == "__main__":
     test_harvest_writes_only_the_qualifying_game_verbatim()
     test_harvest_respects_max_games()
     test_harvested_file_is_correctly_re_splittable_into_separate_games()
+    test_sync_to_drive_survives_hung_rclone()
     print("OK - all harvest_filtered_pgn checks passed")
