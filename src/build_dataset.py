@@ -209,7 +209,17 @@ def main() -> None:
     worker = functools.partial(_process_game, skip_plies=args.skip_plies, min_clock_seconds=args.min_clock_seconds)
 
     games_kept = positions_kept = 0
-    with multiprocessing.Pool(args.workers) as pool:
+    # Not `with multiprocessing.Pool(...)`: that context manager's __exit__
+    # calls pool.join(), which can hang indefinitely when --max-games stops
+    # consumption early -- a known multiprocessing gotcha where prefetched,
+    # already-dispatched-but-unconsumed tasks (chunksize=16, so several
+    # batches ahead) deadlock the pool's internal feeder thread on cleanup.
+    # Observed live twice (2026-09-23) and previously worked around
+    # externally with a `timeout + pkill` wrapper in runpod_overnight.sh --
+    # fixed at the source here instead: terminate() (sends SIGTERM, does not
+    # block) and skip join entirely.
+    pool = multiprocessing.Pool(args.workers)
+    try:
         for target, results in pool.imap_unordered(worker, accepted_games(), chunksize=16):
             if not results:
                 continue
@@ -224,11 +234,20 @@ def main() -> None:
 
             if args.max_games is not None and games_kept >= args.max_games:
                 break
+    finally:
+        pool.terminate()
 
     for writer in writers.values():
         writer.flush()
 
     print(f"Done: {games_seen} games seen, {games_kept} kept, {positions_kept} positions written to {args.out_dir}")
+    # Python's normal interpreter shutdown joins any remaining multiprocessing
+    # children (registered via atexit) -- exactly the hang terminate() above
+    # is meant to avoid. os._exit() skips atexit entirely; nothing after
+    # main() needs to run, so this is safe.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

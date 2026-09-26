@@ -18,6 +18,21 @@
 # a no-op if it's not -- safe either way, keep it even if the transmission
 # method changes.
 #
+# Also wants /root/.config/rclone/rclone.conf for Drive access (harvested
+# PGN input + checkpoint backups) -- set this up ON THE INSTANCE directly via
+# `rclone authorize drive` (needs a port-forwarded SSH session so you can
+# complete the Google OAuth consent in your own local browser -- see
+# docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md). Never scp an rclone.conf
+# from your local machine to the instance -- that file holds a live Drive
+# OAuth token and moving it off your machine is treated as a real credential
+# transfer, blocked in practice (2026-09-25) when tried this way.
+#
+# To restart train.py mid-run WITHOUT losing the pod (e.g. to deploy a code
+# fix): `touch /root/PAUSE_NO_TERMINATE` BEFORE stopping it. Without this,
+# ANY exit of train.py -- crash, natural early-stop, or a manual kill -- is
+# treated as "finished" and self-terminates the pod (see the `set -uo
+# pipefail` note below for why).
+#
 # Run this ON the instance after SSH-ing in (not on your local machine):
 #   bash scripts/runpod_overnight.sh
 #
@@ -45,6 +60,19 @@ set -uo pipefail
 # want execution to reach the final self-terminate call, not hang forever
 # billing on a stalled/crashed script. The watchdog below is the second,
 # independent layer of that same guarantee.
+#
+# This also means ANY exit of the training command below -- a crash, a
+# natural early-stop, OR a deliberate manual kill during a live intervention
+# (e.g. to deploy a code fix) -- reaches the same self-terminate call and
+# destroys the pod. Real incident (run6, 2026-09-25): stopping train.py by
+# hand to redeploy a fix was silently treated as "training finished" and
+# destroyed the pod mid-fix. To safely restart train.py WITHOUT losing the
+# pod: `touch /root/PAUSE_NO_TERMINATE` BEFORE stopping it -- see the check
+# right after training exits, below.
+
+LOG_FILE=/root/overnight.log
+exec > >(tee -a "$LOG_FILE") 2>&1
+PAUSE_FILE=/root/PAUSE_NO_TERMINATE
 
 REPO_URL="${REPO_URL:-https://github.com/mericberktas/neural_chess_engine.git}"
 WORKDIR="${WORKDIR:-/workspace/neural_chess_engine}"
@@ -182,7 +210,22 @@ python src/train.py \
     --val-interval 2000 --epochs "$EPOCHS" --patience "$PATIENCE" \
     --drive-remote "gdrive:chess_bot/checkpoints/$RUN_NAME/" \
     "${RESUME_ARGS[@]}"
-
-echo "== training finished, self-terminating =="
+TRAIN_EXIT=$?
+echo "== train.py exited with code $TRAIN_EXIT =="
 kill "$WATCHDOG_PID" 2>/dev/null
-terminate_self
+
+# Best-effort: back up this run's own log to Drive no matter how/why train.py
+# exited, since the pod (and this log) is gone for good once destroyed below.
+# Real incident (run6, 2026-09-25): a pod died mid-run with no surviving
+# record of why, making the actual stopping point/reason unrecoverable.
+if [ -f /root/.config/rclone/rclone.conf ]; then
+    timeout 60 rclone copy "$LOG_FILE" "gdrive:chess_bot/checkpoints/$RUN_NAME/" || echo "!! could not back up $LOG_FILE"
+fi
+
+if [ -f "$PAUSE_FILE" ]; then
+    rm -f "$PAUSE_FILE"
+    echo "== $PAUSE_FILE found -- NOT self-terminating, pod stays alive for a manual restart =="
+else
+    echo "== self-terminating (train.py exit code $TRAIN_EXIT) =="
+    terminate_self
+fi

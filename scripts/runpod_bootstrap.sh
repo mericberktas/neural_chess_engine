@@ -2,13 +2,22 @@
 # Bootstrap a rented RunPod instance for a real training run.
 # Run this ON the instance after SSH-ing in (not on your local machine).
 #
-# Before running this script, from your LOCAL machine:
-#   1. Create the pod from a PyTorch image (torch/CUDA already installed
-#      there -- this script deliberately does not reinstall torch).
-#   2. Copy your rclone config so checkpoints can be pulled off before the
-#      instance is destroyed:
-#        scp -P <SSH_PORT> ~/.config/rclone/rclone.conf root@<SSH_HOST>:/root/.config/rclone/rclone.conf
-#   3. SSH in, then run this script.
+# Before running this script:
+#   1. From your LOCAL machine: create the pod from a PyTorch image
+#      (torch/CUDA already installed there -- this script deliberately does
+#      not reinstall torch).
+#   2. SSH in, then set up Drive access ON THE INSTANCE directly:
+#        rclone authorize drive
+#      This prints a URL and waits; open an SSH session from your local
+#      machine with `-L 53682:localhost:53682` to that same instance, open
+#      the printed URL in your own browser to complete Google's OAuth
+#      consent, then paste the resulting token into an rclone.conf on the
+#      instance (see docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md for the
+#      full walkthrough). Never scp an rclone.conf from your local machine
+#      to the instance -- that file holds a live Drive OAuth token, and
+#      moving it off your machine is a real credential transfer (blocked in
+#      practice, 2026-09-25, when tried that way).
+#   3. Then run this script.
 #
 # Configurable via env vars (all optional, shown with defaults):
 #   REPO_URL, TRAIN_MONTH, TEST_MONTH, WORKDIR, TRAIN_MAX_GAMES, TEST_MAX_GAMES
