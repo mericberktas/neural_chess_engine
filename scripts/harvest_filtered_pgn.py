@@ -58,14 +58,19 @@ def harvest(source: str, out_path: Path, min_elo: int, max_elo: int, max_games: 
 def sync_to_drive(path: Path, drive_remote: str) -> None:
     # Same graceful-failure pattern as train.py's save_checkpoint: a sync
     # hiccup shouldn't lose a month we already spent time downloading.
+    # timeout=180 for the same reason train.py's rclone call has one: an
+    # rclone hang here (real incident, run6, 2026-09-25) would otherwise
+    # block this script indefinitely with no recovery.
     try:
-        result = subprocess.run(["rclone", "copy", str(path), drive_remote], capture_output=True, text=True)
+        result = subprocess.run(["rclone", "copy", str(path), drive_remote], capture_output=True, text=True, timeout=180)
         if result.returncode != 0:
             print(f"  WARNING: rclone sync failed for {path.name}: {result.stderr.strip()[:300]}", file=sys.stderr)
         else:
             print(f"  synced {path.name} -> {drive_remote}", file=sys.stderr)
     except OSError as e:
         print(f"  WARNING: rclone sync failed to start for {path.name}: {e}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(f"  WARNING: rclone sync timed out after 180s for {path.name}", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
