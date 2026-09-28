@@ -1,24 +1,22 @@
-# Eğitim Koşuları Karşılaştırması (run1-run5)
+# Eğitim Koşuları Karşılaştırması (run1-run6)
 
-Şimdiye kadar tamamlanan 5 gerçek GPU eğitim koşusunun neyi nasıl farklı yaptığının özeti. Ayrıntılı olay anlatımı (bug'lar, operasyonel arızalar vb.) için [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'ye bakın — bu dosya sadece koşular arası metodolojik farkları ve sonuçları özetler.
+Şimdiye kadar tamamlanan gerçek GPU eğitim koşularının neyi nasıl farklı yaptığının özeti. Ayrıntılı olay anlatımı (bug'lar, operasyonel arızalar vb.) için [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'ye bakın — bu dosya sadece koşular arası metodolojik farkları ve sonuçları özetler.
 
-run1-run4'te mimari **sabit**: `ChessTransformer`, batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, dropout 0.1, ~4.76M parametre, 18 kanallı girdi. run5, `run5-rich-encoding` branch'inde girdiyi 21 kanala çıkardı (mimari boyutu aynı kaldı) — bkz. [docs/plans/02_Model_Mimarisi_ve_Egitim.md](../plans/02_Model_Mimarisi_ve_Egitim.md).
+run1-run4'te mimari **sabit**: `ChessTransformer`, batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, dropout 0.1, ~4.76M parametre, 18 kanallı girdi. run5, `run5-rich-encoding` branch'inde girdiyi 21 kanala çıkardı (mimari boyutu aynı kaldı) — bkz. [docs/plans/02_Model_Mimarisi_ve_Egitim.md](../plans/02_Model_Mimarisi_ve_Egitim.md). run6, `run6-gab-see` branch'inde 22. kanalı (SEE riski) ve Geometric Attention Bias'ı (~349K ek parametre) ekledi.
 
 ## Özet tablo
 
-| | run1 | run2 | run3 | run4 | run5 |
-|---|---|---|---|---|---|
-| Veri | 1 ay (2026-08), 40K oyun, 2.3M pozisyon | 4 ay (2026-08→05), ~9M pozisyon | 8 ay (2026-01→08), 18.0M train pozisyonu | 8 ay (run3 ile aynı, sıfırdan yeniden indirildi) | 8 ay (run3/4 ile aynı, Drive'daki harvest'ten) |
-| Test ayı (zaman-ayrık) | 2026-04 | 2026-04 | 2025-12 | 2025-12 | 2025-12 (build sırasında donma nedeniyle atlandı — eğitim buna bağlı değil) |
-| Girdi kanalları | 18 | 18 | 18 | 18 | **21** (+mobilite maskesi, +son hamle kalkış/varış kareleri) |
-| Regülarizasyon (AdamW weight-decay, label smoothing) | Yok | Yok | Var (0.01 / 0.1) | Var (run3 ile aynı) | Var (aynı) |
-| LR programı | Sabit 3e-4 | Sabit 3e-4 | Sabit 3e-4 | `ReduceLROnPlateau` (patience 1, factor 0.5) | Aynı (sıfırdan) |
-| Resume | — (ilk koşu) | — (sıfırdan) | — (sıfırdan) | run3'ün checkpoint'inden (step 64000) — **sadece ağırlıklar** | — (mimari uyumsuz, sıfırdan zorunlu) |
-| Early-stop patience | — (max_steps/1 epoch ile sınırlı) | 3 | 3 | 4 | 4 |
-| Sonuç (best) | step 8000, val_top1 **%32.9**, val_top3 %47.1 | step 68000, val_top1 **%45.35**, val_top3 %59.82 | step 64000, val_top1 **%45.08**, val_top3 %59.53 | step 130000, val_top1 **%50.02**, val_top3 %63.28 | step 108000, val_top1 **%50.18**, val_top3 %63.54 |
-| Nasıl bitti | Manuel doğrulama sonrası `terminate_pod` | Gerçek early-stopping | Gerçek early-stopping (kendi kendine self-terminate) | Gerçek early-stopping (kendi kendine self-terminate) | Kendi kendine self-terminate (early-stop/watchdog — pod log'u pod silindiği için sonradan doğrulanamadı) |
-| Checkpoint boyutu | ~19MB (sadece ağırlık) | ~19MB (sadece ağırlık) | ~19MB (sadece ağırlık) | ~57MB (ağırlık + optimizer state) | ~57MB (aynı format) |
-| Drive yolu | `gdrive:chess_bot/checkpoints/run1/` | `gdrive:chess_bot/checkpoints/run2/` | `gdrive:chess_bot/checkpoints/run3/` | `gdrive:chess_bot/checkpoints/run4/` | `gdrive:chess_bot/checkpoints/run5/` |
+| | run1 | run2 | run3 | run4 | run5 | run6 |
+|---|---|---|---|---|---|---|
+| Veri | 1 ay, 2.3M pozisyon | 4 ay, ~9M pozisyon | 8 ay, 18.0M train pozisyonu | 8 ay (run3 ile aynı) | 8 ay (run3/4 ile aynı) | **16 ay**, Drive harvest'ten |
+| Girdi kanalları | 18 | 18 | 18 | 18 | 21 | **22** (+SEE riski) + GAB |
+| LR programı | Sabit 3e-4 | Sabit 3e-4 | Sabit 3e-4 | `ReduceLROnPlateau` (patience 1, factor 0.5) | Aynı | Aynı — ama bkz. aşağıdaki not |
+| Resume | — | — | — | run3'ten (sadece ağırlık) | — (mimari uyumsuz) | **2 kez zorla** (pod ölümleri) + 1 planlı (scheduler-fix testi için) |
+| Sonuç (best) | step 8000, %32.9 | step 68000, %45.35 | step 64000, %45.08 | step 130000, **%50.02** | step 108000, **%50.18** | step 56000, **%48.71** ⚠️ |
+| Nasıl bitti | Manuel `terminate_pod` | Gerçek early-stopping | Gerçek early-stopping | Gerçek early-stopping | Self-terminate | Gerçek early-stopping (step 64000, ⚠️ bkz. not) |
+| Drive yolu | `run1/` | `run2/` | `run3/` | `run4/` | `run5/` | `run6/` |
+
+⚠️ **run6'nın %48.71 sonucu güvenilir bir GAB+SEE değerlendirmesi DEĞİL** — deney, iki zorla resume'un tetiklediği bir `ReduceLROnPlateau` bug'ı yüzünden kirlendi (ayrıntı: [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'nin 2026-09-28 notu). Fix'li kodla temiz bir tekrar bekleniyor, bu tablo o zaman güncellenecek.
 
 ## Koşu koşu neden/ne değişti
 
@@ -45,6 +43,4 @@ Aksiyon önerisi: Bu analiz koda dönüştürülmedi, sadece belgelendi. Sırada
 
 ## Sıradaki adım
 
-16-17 aylık veri havuzu (2025-04→2026-08) Drive'da harvest edildi (`gdrive:chess_bot/filtered_pgn/`) — `NUM_MONTHS=16` ile kullanılabilir.
-
-`run6-gab-see` branch'inde (run5'ten türetildi) girdiye bir SEE-riski kanalı eklendi (21→22 kanal) ve Chessformer'ın Geometric Attention Bias'ı (dinamik, tahta-durumuna-bağlı attention bias'ı) implemente edildi — ayrıntı için [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'nin 2026-09-25 notuna bakın. Tüm lokal testler yeşil; henüz bir pod'da eğitilmedi (mimari değişikliği yüzünden sıfırdan eğitim gerekiyor, `--resume-from` mümkün değil).
+run6, `ReduceLROnPlateau` resume-state fix'i ile step 64000'den (fix'siz kodun ürettiği son checkpoint) devam ettirilecek — 16 aylık veri artık `gdrive:chess_bot/tensors/run6/`'da tam cache'li olduğu için build'e gerek yok, doğrudan devam edilebilir. Bu, run6'nın gerçek/temiz sonucunu verecek.

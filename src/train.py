@@ -16,7 +16,12 @@ and configured -- see docs/reference/Teknoloji_Yigini_ve_Kaynaklar.md).
 
 Pass --resume-from <checkpoint>.pt to continue training if a run was cut
 short (pod died, watchdog fired, etc.): restores model weights, optimizer
-state, and the step/best-val_top1 counters from that checkpoint.
+state, the LR scheduler's own plateau-tracking state, and the
+step/best-val_top1 counters from that checkpoint. The scheduler restore
+matters: a freshly-constructed ReduceLROnPlateau starts its internal "best"
+at -inf, so without this a resumed run can mistake several below-best val
+checks for improvements and delay a real LR decay until early stopping
+fires first (real incident, run6, 2026-09-26 -- see docs/log/Ilerleme_Notlari.md).
 
 Regularization: AdamW (--weight-decay, default 0.01) instead of plain Adam,
 and label smoothing on both heads' cross-entropy (--label-smoothing, default
@@ -131,13 +136,16 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device: torch.device, max
 
 
 def save_checkpoint(
-    path: Path, model: nn.Module, optimizer: torch.optim.Optimizer, args: argparse.Namespace, step: int, top1: float, top3: float,
+    path: Path, model: nn.Module, optimizer: torch.optim.Optimizer,
+    lr_scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau, args: argparse.Namespace,
+    step: int, top1: float, top3: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": lr_scheduler.state_dict(),
             "model_args": {name: getattr(args, name) for name in MODEL_ARG_NAMES},
             "step": step,
             "val_top1": top1,
@@ -202,9 +210,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resume-from", type=Path, default=None,
         help="Resume from a checkpoint saved by this script: restores model weights, optimizer state, "
-             "step count and best val_top1 (optimizer state is skipped with a warning if the checkpoint "
-             "predates it). Training then continues from that step count; the epoch loop still restarts "
-             "at epoch 0 since shards are reshuffled each run anyway.",
+             "LR scheduler state, step count and best val_top1 (optimizer/scheduler state are skipped, "
+             "with a warning, if the checkpoint predates them -- the scheduler falls back to seeding "
+             "just its \"best\" with the true best_top1 instead of leaving it at -inf). Training then "
+             "continues from that step count; the epoch loop still restarts at epoch 0 since shards are "
+             "reshuffled each run anyway.",
     )
     parser.add_argument(
         "--lr-patience", type=int, default=1,
@@ -246,6 +256,22 @@ def main() -> None:
             print(f"  WARNING: {args.resume_from} has no optimizer state (older checkpoint) -- optimizer starts fresh", file=sys.stderr)
         step = ckpt["step"]
         best_top1 = ckpt["val_top1"]
+        # ReduceLROnPlateau tracks its own "best" internally, separate from
+        # best_top1 above -- a freshly-constructed scheduler starts that at
+        # -inf, so right after resuming it treats the next several val
+        # checks as "improving" relative to -inf even when they're actually
+        # below the true best_top1, delaying a real decay. Real incident
+        # (run6, 2026-09-26): this let early stopping (which correctly
+        # compares against best_top1) fire before the scheduler ever got a
+        # second chance to decay after a forced resume. Restore its full
+        # state when the checkpoint has one (saved by this same fix); older
+        # checkpoints don't, so fall back to seeding just `.best` with the
+        # true value instead of leaving it at -inf.
+        if "scheduler_state_dict" in ckpt:
+            lr_scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        else:
+            lr_scheduler.best = best_top1
+            print(f"  WARNING: {args.resume_from} has no scheduler state (older checkpoint) -- seeding scheduler.best={best_top1:.4f} instead of -inf", file=sys.stderr)
         print(f"resumed from {args.resume_from} at step {step}, best val_top1 {best_top1:.4f}", file=sys.stderr)
 
     checks_without_improvement = 0
@@ -282,7 +308,7 @@ def main() -> None:
                 if top1 > best_top1:
                     best_top1 = top1
                     checks_without_improvement = 0
-                    save_checkpoint(ckpt_path, model, optimizer, args, step, top1, top3)
+                    save_checkpoint(ckpt_path, model, optimizer, lr_scheduler, args, step, top1, top3)
                     print(f"  new best checkpoint -> {ckpt_path}", file=sys.stderr)
                 else:
                     checks_without_improvement += 1
@@ -301,7 +327,7 @@ def main() -> None:
     if best_top1 < 0:  # never hit a val-interval boundary (e.g. max-steps < val-interval)
         top1, top3 = evaluate(model, val_loader, device, args.val_batches)
         best_top1 = top1
-        save_checkpoint(ckpt_path, model, optimizer, args, step, top1, top3)
+        save_checkpoint(ckpt_path, model, optimizer, lr_scheduler, args, step, top1, top3)
         print(f"final val_top1 {top1:.4f} val_top3 {top3:.4f}, checkpoint -> {ckpt_path}", file=sys.stderr)
 
     writer.close()
