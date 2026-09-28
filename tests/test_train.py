@@ -94,9 +94,10 @@ def test_save_checkpoint_survives_missing_rclone():
         with tempfile.TemporaryDirectory() as tmp:
             model = nn.Linear(4, 4)
             optimizer = optim.AdamW(model.parameters())
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max")
             args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:some/fake/remote/")
             path = Path(tmp) / "checkpoints" / "best.pt"
-            save_checkpoint(path, model, optimizer, args, step=1, top1=0.0, top3=0.0)  # must not raise
+            save_checkpoint(path, model, optimizer, scheduler, args, step=1, top1=0.0, top3=0.0)  # must not raise
             assert path.exists()
     finally:
         train.subprocess.run = real_run
@@ -118,9 +119,10 @@ def test_save_checkpoint_survives_hung_rclone():
         with tempfile.TemporaryDirectory() as tmp:
             model = nn.Linear(4, 4)
             optimizer = optim.AdamW(model.parameters())
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max")
             args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote="gdrive:some/fake/remote/")
             path = Path(tmp) / "checkpoints" / "best.pt"
-            save_checkpoint(path, model, optimizer, args, step=1, top1=0.0, top3=0.0)  # must not hang or raise
+            save_checkpoint(path, model, optimizer, scheduler, args, step=1, top1=0.0, top3=0.0)  # must not hang or raise
             assert path.exists()
     finally:
         train.subprocess.run = real_run
@@ -132,6 +134,7 @@ def test_resuming_restores_model_and_optimizer_state():
     with tempfile.TemporaryDirectory() as tmp:
         model = nn.Linear(4, 4)
         optimizer = optim.AdamW(model.parameters(), lr=1e-2)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=1)
         # One real step so the optimizer actually has state (Adam's momentum
         # buffers) to resume, not just its freshly-initialized empty state.
         loss = model(torch.ones(1, 4)).sum()
@@ -140,7 +143,7 @@ def test_resuming_restores_model_and_optimizer_state():
 
         args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote=None)
         path = Path(tmp) / "best.pt"
-        save_checkpoint(path, model, optimizer, args, step=123, top1=0.42, top3=0.7)
+        save_checkpoint(path, model, optimizer, scheduler, args, step=123, top1=0.42, top3=0.7)
 
         fresh_model = nn.Linear(4, 4)
         fresh_optimizer = optim.AdamW(fresh_model.parameters(), lr=1e-2)
@@ -157,6 +160,61 @@ def test_resuming_restores_model_and_optimizer_state():
         # weights -- confirms load_state_dict actually restored it.
         resumed_state = next(iter(fresh_optimizer.state_dict()["state"].values()))
         assert resumed_state["step"] == 1
+        assert "scheduler_state_dict" in ckpt
+
+
+def test_resumed_scheduler_state_survives_a_second_construction():
+    # Regression test for a real incident (run6, 2026-09-26): a freshly
+    # constructed ReduceLROnPlateau starts its internal "best" at -inf, so
+    # right after resuming it treated the next several val checks as
+    # "improving" relative to -inf even though they were below the true
+    # best_top1 -- delaying a real LR decay until early stopping (which
+    # correctly compares against best_top1) fired first. Mirrors main()'s
+    # --resume-from branch: if the checkpoint has scheduler_state_dict,
+    # load it; a decayed LR and an elevated `best` must both survive.
+    model = nn.Linear(4, 4)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=1, factor=0.5)
+    scheduler.step(0.40)  # improving
+    scheduler.step(0.30)  # bad 1
+    scheduler.step(0.30)  # bad 2 -> decays (patience=1 tolerates one bad check)
+    decayed_lr = optimizer.param_groups[0]["lr"]
+    assert decayed_lr == 5e-3  # confirms the decay above actually happened
+
+    with tempfile.TemporaryDirectory() as tmp:
+        args = argparse.Namespace(**{name: 1 for name in MODEL_ARG_NAMES}, drive_remote=None)
+        path = Path(tmp) / "best.pt"
+        save_checkpoint(path, model, optimizer, scheduler, args, step=1, top1=0.40, top3=0.6)
+        ckpt = torch.load(path, map_location="cpu")
+
+        fresh_model = nn.Linear(4, 4)
+        fresh_optimizer = optim.AdamW(fresh_model.parameters(), lr=1e-2)
+        fresh_optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        fresh_scheduler = optim.lr_scheduler.ReduceLROnPlateau(fresh_optimizer, mode="max", patience=1, factor=0.5)
+        fresh_scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+        assert fresh_optimizer.param_groups[0]["lr"] == decayed_lr
+        assert fresh_scheduler.best == 0.40
+        # A value between the two plateaued 0.30s and the true best 0.40 must
+        # NOT look like an improvement to the resumed scheduler (it would to
+        # a freshly-constructed one, whose best starts at -inf).
+        fresh_scheduler.step(0.35)
+        assert fresh_scheduler.num_bad_epochs == 1
+
+
+def test_scheduler_best_is_seeded_for_a_checkpoint_without_scheduler_state():
+    # The fallback path in main()'s resume block for a checkpoint saved
+    # before this fix existed (no "scheduler_state_dict" key): seed
+    # `.best` with the true best_top1 instead of leaving a fresh
+    # scheduler's -inf, so it doesn't mistake a below-best value for an
+    # improvement right after resuming.
+    model = nn.Linear(4, 4)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=1)
+    best_top1 = 0.4871
+    scheduler.best = best_top1  # the fallback main() applies when resuming an old-format checkpoint
+    scheduler.step(0.45)  # below best_top1 -- must count as a bad check, not an improvement
+    assert scheduler.num_bad_epochs == 1
 
 
 if __name__ == "__main__":
@@ -166,4 +224,6 @@ if __name__ == "__main__":
     test_save_checkpoint_survives_missing_rclone()
     test_save_checkpoint_survives_hung_rclone()
     test_resuming_restores_model_and_optimizer_state()
+    test_resumed_scheduler_state_survives_a_second_construction()
+    test_scheduler_best_is_seeded_for_a_checkpoint_without_scheduler_state()
     print("OK - all train checks passed")

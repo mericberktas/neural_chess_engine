@@ -2,6 +2,15 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-28 — run6'nın %48.71'de kalmasının asıl sebebi: resume scheduler bug'ı
+
+- Aşama: Altyapı — run6'nın nihai sonucu (step 56000, val_top1 %48.71, run4/5'in altında) post-mortem log'dan (yeni log-yedekleme özelliği sayesinde) analiz edildi.
+- **Kök sebep, GAB/SEE'nin mimari yetersizliği değil:** `train.py`'daki `ReduceLROnPlateau` her `--resume-from` çağrısında sıfırdan oluşturuluyordu (`lr_scheduler.best` = -inf), ama kendi state'i checkpoint'e hiç kaydedilmiyordu. run6 iki kez zorla resume edildi (pod ölümleri yüzünden); son resume'da (step 56000→64000) scheduler'ın sıfırlanmış referansı, gerçek best'in (%48.71) altındaki değerleri "iyileşme" sandı ve hiç düşmedi — ama early-stopping (`checks_without_improvement`, checkpoint'ten doğru geri yükleniyor) aynı değerleri doğru şekilde "iyileşme yok" sayıp step 64000'de ateşledi. Sonuç: run6 toplamda sadece **1 kez** LR yarıladı (run4 130000 step'te **5 kez** yarılamıştı), ikinci bir yarılanma fırsatı scheduler'a hiç doğmadan early-stop devreye girdi.
+- Fix: `save_checkpoint()` artık `scheduler_state_dict`'i de kaydediyor; `--resume-from` bunu varsa geri yüklüyor, yoksa (eski checkpoint'ler) en azından `scheduler.best`'i gerçek `best_top1`'e sabitliyor (-inf yerine) — böylece resume sonrası ilk birkaç check yanlışlıkla "iyileşme" sayılmıyor.
+- **Sonuç:** run6'nın "%48.71'de tıkanması" GAB+SEE'nin değerine dair güvenilir bir kanıt değil — deney, resume kesintileri yüzünden kirlenmiş. Adil bir karşılaştırma için fix'li kodla step 64000'den devam edilecek (tensor cache sayesinde build'e gerek yok).
+- Doğrulama: `test_resumed_scheduler_state_survives_a_second_construction` ve `test_scheduler_best_is_seeded_for_a_checkpoint_without_scheduler_state` eklendi, ikisi de gerçek `ReduceLROnPlateau` nesneleriyle hem tam state-restore hem eski-checkpoint fallback yolunu doğruluyor. Tüm mevcut testler yeşil.
+- Sıradaki adım: Bu fix'le step 64000'den resume edip, scheduler'ın artık gerçek bir ikinci (ve gerekirse üçüncü) LR düşüşü fırsatı bulup bulmadığını gözlemlemek.
+
 ## 2026-09-26 — Encode edilmiş tensor'lar da Drive'a cache'leniyor artık
 
 - Aşama: Altyapı — `filtered_pgn` cache'inin (ham PGN) yanına, `TENSOR_REMOTE` (varsayılan `gdrive:chess_bot/tensors/`) altında `RUN_NAME`'e göre versiyonlu bir encode edilmiş tensor cache'i eklendi. Kullanıcının önerisi: build_dataset.py'ın CPU-bound encode adımı (16 ay için ~70 dakika, pahalı GPU pod'unu boşuna bekletiyor) her pod'da sıfırdan tekrarlanmasın.
