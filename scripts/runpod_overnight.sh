@@ -48,6 +48,9 @@
 #   LR (default 3e-4 -- scale roughly linearly with BATCH_SIZE, e.g. 4x batch
 #   ~ 4x LR, when changing it, per the standard large-batch linear scaling
 #   rule; this script does no such scaling automatically),
+#   VAL_INTERVAL (default 2000 * 256 / BATCH_SIZE, auto-scaled so a val check
+#   still happens at the same fraction of an epoch as BATCH_SIZE=256's
+#   original 2000 -- set explicitly to override),
 #   RESUME_FROM_REMOTE (an rclone path to a checkpoint, e.g.
 #   gdrive:chess_bot/checkpoints/run3/best.pt -- fetched and passed to
 #   train.py's --resume-from if set), FILTERED_PGN_REMOTE (default
@@ -95,6 +98,13 @@ EPOCHS="${EPOCHS:-15}"
 PATIENCE="${PATIENCE:-4}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 LR="${LR:-3e-4}"
+# Calibrated for BATCH_SIZE=256 (run1-6): checking every 2000 steps there is
+# ~1.4% of an epoch (35.7M positions / 256 ~= 140k steps/epoch). Scaling
+# VAL_INTERVAL inversely with BATCH_SIZE keeps that same "positions seen
+# between checks" ratio -- without this, run7's batch=4096 (2026-09-29) left
+# val-interval at a fixed 2000 steps, which became ~23% of an epoch instead,
+# making early-stopping (patience checks) far less sensitive than intended.
+VAL_INTERVAL="${VAL_INTERVAL:-$((2000 * 256 / BATCH_SIZE))}"
 WATCHDOG_HOURS="${WATCHDOG_HOURS:-8}"
 RESUME_FROM_REMOTE="${RESUME_FROM_REMOTE-gdrive:chess_bot/checkpoints/run3/best.pt}"
 FILTERED_PGN_REMOTE="${FILTERED_PGN_REMOTE:-gdrive:chess_bot/filtered_pgn/}"
@@ -239,12 +249,12 @@ if [ -n "$RESUME_FROM_REMOTE" ]; then
     fi
 fi
 
-echo "== training: batch $BATCH_SIZE, lr $LR, cap ${EPOCHS} epochs, early stop after ${PATIENCE} non-improving val checks =="
+echo "== training: batch $BATCH_SIZE, lr $LR, val every $VAL_INTERVAL steps, cap ${EPOCHS} epochs, early stop after ${PATIENCE} non-improving val checks =="
 python src/train.py \
     --train-dir "${TRAIN_DIRS[@]}" --val-dir "${VAL_DIRS[@]}" \
     --out-dir "checkpoints/$RUN_NAME" \
     --batch-size "$BATCH_SIZE" --lr "$LR" --d-model 256 --nhead 8 --num-layers 6 --dim-feedforward 1024 \
-    --val-interval 2000 --epochs "$EPOCHS" --patience "$PATIENCE" \
+    --val-interval "$VAL_INTERVAL" --epochs "$EPOCHS" --patience "$PATIENCE" \
     --drive-remote "gdrive:chess_bot/checkpoints/$RUN_NAME/" \
     "${RESUME_ARGS[@]}"
 TRAIN_EXIT=$?
