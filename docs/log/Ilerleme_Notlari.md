@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-29 — Scheduler fix DOĞRULANDI (run6 %50.61'e ulaştı), ama rclone timeout'u çok kısaydı
+
+- Aşama: Altyapı + Aşama 2 — bir önceki notun (2026-09-28) scheduler fix'i gerçek bir pod'da test edildi.
+- **Scheduler fix çalıştı, hipotez doğrulandı:** run6, step 56000'deki gerçek Drive checkpoint'inden (val_top1 %48.71) resume edildi. LR bu sefer **4 kez daha** düzgün düştü (1.5e-4→7.5e-5→3.75e-5→1.87e-5→9.37e-6), val_top1 sürekli iyileşti ve **step 88000'de %50.61'e ulaştı** — run4'ü (%50.02) VE run5'i (%50.18) geçti. Early-stopping step 96000'de düzgün tetiklendi. Bu, run6'nın önceki %48.71 sonucunun gerçekten scheduler bug'ından kaynaklandığını, GAB+SEE'nin kendisinin run4/5 seviyesinde (hatta üstünde) çalıştığını kanıtlıyor.
+- **Ama yeni bir sorun çıktı: rclone timeout'u (180s) çok kısaydı.** Bu pod'un ağı yavaştı (~250KB/s), 61MB'lık checkpoint'i yüklemek ~244sn sürüyor. 7 yeni-best checkpoint'ten **4'ü** (step 64000, 68000, 82000, **88000 — gerçek best dahil**) sync timeout'una takıldı. Timeout mekanizması kendisi doğruydu (asılıp kalmayı önledi, eğitim step 96000'e kadar sorunsuz devam etti) ama süre gerçekçi değildi — sadece Drive'daki SON başarılı sync'in (step 78000, %49.82) checkpoint'i kurtarılabilir oldu, gerçek best'in (step 88000, %50.61) ağırlıkları pod silinince kayboldu.
+- Fix: `RCLONE_SYNC_TIMEOUT_SECONDS` 180→600 (`train.py`, `harvest_filtered_pgn.py`, `runpod_overnight.sh`'ın tensor-cache upload'ları) — 600s, ~100KB/s gibi gerçekten yavaş ama çalışan bir bağlantıyı bile kapsıyor, gerçek bir donmayı hâlâ makul bir sürede yakalıyor.
+- Sıradaki adım: Bu fix'le son kurtarılabilir checkpoint'ten (step 78000, %49.82) devam ettirmek — kullanıcı RTX 4090 istedi (biraz daha hızlı bitsin diye).
+
 ## 2026-09-28 — run6'nın %48.71'de kalmasının asıl sebebi: resume scheduler bug'ı
 
 - Aşama: Altyapı — run6'nın nihai sonucu (step 56000, val_top1 %48.71, run4/5'in altında) post-mortem log'dan (yeni log-yedekleme özelliği sayesinde) analiz edildi.

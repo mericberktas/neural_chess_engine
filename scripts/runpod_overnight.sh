@@ -183,7 +183,7 @@ for month in $TRAIN_MONTHS; do
         python src/build_dataset.py \
             --source "$SOURCE" \
             --out-dir "data/train_${month}" --split train --max-games "$TRAIN_MAX_GAMES"
-        timeout 300 rclone copy "data/train_${month}/" "$TENSOR_PATH" || echo "!! could not cache tensors for $month to $TENSOR_PATH"
+        timeout 600 rclone copy "data/train_${month}/" "$TENSOR_PATH" || echo "!! could not cache tensors for $month to $TENSOR_PATH"
     fi
     TRAIN_DIRS+=("data/train_${month}/train")
     VAL_DIRS+=("data/train_${month}/val")
@@ -215,7 +215,7 @@ else
     fi
     pkill -9 -f "src/build_dataset.py --source $TEST_SOURCE" 2>/dev/null || true
     if [ -d data/test_full ]; then
-        timeout 300 rclone copy data/test_full/ "$TEST_TENSOR_PATH" || echo "!! could not cache test tensors to $TEST_TENSOR_PATH"
+        timeout 600 rclone copy data/test_full/ "$TEST_TENSOR_PATH" || echo "!! could not cache test tensors to $TEST_TENSOR_PATH"
     fi
 fi
 
