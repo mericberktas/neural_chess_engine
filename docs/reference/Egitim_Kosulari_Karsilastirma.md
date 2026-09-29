@@ -12,11 +12,13 @@ run1-run4'te mimari **sabit**: `ChessTransformer`, batch 256, d_model 256, nhead
 | Girdi kanalları | 18 | 18 | 18 | 18 | 21 | **22** (+SEE riski) + GAB |
 | LR programı | Sabit 3e-4 | Sabit 3e-4 | Sabit 3e-4 | `ReduceLROnPlateau` (patience 1, factor 0.5) | Aynı | Aynı — ama bkz. aşağıdaki not |
 | Resume | — | — | — | run3'ten (sadece ağırlık) | — (mimari uyumsuz) | **2 kez zorla** (pod ölümleri) + 1 planlı (scheduler-fix testi için) |
-| Sonuç (best) | step 8000, %32.9 | step 68000, %45.35 | step 64000, %45.08 | step 130000, **%50.02** | step 108000, **%50.18** | step 56000, **%48.71** ⚠️ |
-| Nasıl bitti | Manuel `terminate_pod` | Gerçek early-stopping | Gerçek early-stopping | Gerçek early-stopping | Self-terminate | Gerçek early-stopping (step 64000, ⚠️ bkz. not) |
-| Drive yolu | `run1/` | `run2/` | `run3/` | `run4/` | `run5/` | `run6/` |
+| Sonuç (best) | step 8000, %32.9 | step 68000, %45.35 | step 64000, %45.08 | step 130000, %50.02 | step 108000, %50.18 | step 88000, **%50.61** ⚠️ |
+| Nasıl bitti | Manuel `terminate_pod` | Gerçek early-stopping | Gerçek early-stopping | Gerçek early-stopping | Self-terminate | Gerçek early-stopping (step 96000) |
+| Drive yolu | `run1/` | `run2/` | `run3/` | `run4/` | `run5/` | `run6/` (⚠️ sadece step 78000/%49.82 kurtarılabilir) |
 
-⚠️ **run6'nın %48.71 sonucu güvenilir bir GAB+SEE değerlendirmesi DEĞİL** — deney, iki zorla resume'un tetiklediği bir `ReduceLROnPlateau` bug'ı yüzünden kirlendi (ayrıntı: [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'nin 2026-09-28 notu). Fix'li kodla temiz bir tekrar bekleniyor, bu tablo o zaman güncellenecek.
+**run6, scheduler resume-fix'i sonrası run4/5'i geçti** (%50.61 > %50.18 > %50.02) — GAB+SEE hipotezi doğrulandı, önceki %48.71 sonucu gerçekten bir bug'dan kaynaklanıyormuş (ayrıntı: [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'nin 2026-09-28 notu).
+
+⚠️ **Ama gerçek best'in (step 88000) ağırlıkları kayıp** — bu pod'un ağı yavaştı (~250KB/s), 61MB'lık checkpoint'in Drive sync'i o zamanki 180s timeout'a takıldı (4/7 yeni-best sync'i başarısız oldu), pod silinince o ağırlıklar sonsuza dek gitti. Drive'da fiilen duran son checkpoint step 78000 (%49.82) — yine de eski bug'lı sonucun (%48.71) üzerinde. Timeout 180s→600s'e çıkarıldı (2026-09-29 notu), aynı kayıp bir daha yaşanmamalı.
 
 ## Koşu koşu neden/ne değişti
 
@@ -43,4 +45,4 @@ Aksiyon önerisi: Bu analiz koda dönüştürülmedi, sadece belgelendi. Sırada
 
 ## Sıradaki adım
 
-run6, `ReduceLROnPlateau` resume-state fix'i ile step 64000'den (fix'siz kodun ürettiği son checkpoint) devam ettirilecek — 16 aylık veri artık `gdrive:chess_bot/tensors/run6/`'da tam cache'li olduğu için build'e gerek yok, doğrudan devam edilebilir. Bu, run6'nın gerçek/temiz sonucunu verecek.
+run6, son kurtarılabilir checkpoint'ten (step 78000, %49.82) 600s rclone timeout'uyla devam ettirilecek — hedef, step 88000'in %50.61'ini (veya daha iyisini) bu sefer gerçekten Drive'a güvenle kaydetmek.

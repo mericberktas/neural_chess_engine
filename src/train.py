@@ -44,6 +44,15 @@ from torch.utils.tensorboard import SummaryWriter
 from model import ChessTransformer
 
 MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout")
+# A best.pt is ~60MB. 180s (real incident, run6, 2026-09-25 fix) assumed
+# nothing slower than ~2.7Mbps and turned out too tight: a later run
+# (2026-09-28) hit a pod with a genuinely slow but working connection
+# (~250KB/s), needing ~244s -- the sync kept timing out and several real
+# new-best checkpoints (including the run's true best) never made it to
+# Drive before the pod was destroyed. 600s comfortably covers a legitimately
+# slow transfer (>=100KB/s) while still catching an actual hang well before
+# anyone would think to check on it.
+RCLONE_SYNC_TIMEOUT_SECONDS = 600
 
 
 class ShardDataset(Dataset):
@@ -166,7 +175,8 @@ def save_checkpoint(
         # the entire training loop for 10+ minutes until manually killed.
         try:
             result = subprocess.run(
-                ["rclone", "copy", str(path), args.drive_remote], capture_output=True, text=True, timeout=180,
+                ["rclone", "copy", str(path), args.drive_remote], capture_output=True, text=True,
+                timeout=RCLONE_SYNC_TIMEOUT_SECONDS,
             )
             if result.returncode != 0:
                 print(f"  WARNING: rclone sync failed ({result.returncode}): {result.stderr.strip()[:300]}", file=sys.stderr)
@@ -175,7 +185,7 @@ def save_checkpoint(
         except OSError as e:
             print(f"  WARNING: rclone sync failed to start: {e}", file=sys.stderr)
         except subprocess.TimeoutExpired:
-            print("  WARNING: rclone sync timed out after 180s -- continuing without backup", file=sys.stderr)
+            print(f"  WARNING: rclone sync timed out after {RCLONE_SYNC_TIMEOUT_SECONDS}s -- continuing without backup", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
