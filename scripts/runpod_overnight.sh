@@ -41,6 +41,13 @@
 #   run5-rich-encoding to run an experiment branch without a manual
 #   `git checkout` step), RUN_NAME, TRAIN_MONTHS (space-separated), TEST_MONTH,
 #   TRAIN_MAX_GAMES, TEST_MAX_GAMES, EPOCHS, PATIENCE, WATCHDOG_HOURS,
+#   BATCH_SIZE (default 256 -- every run so far used this default for
+#   comparability; VRAM headroom was never actually the constraint, observed
+#   usage was ~2.7GB even on a 24GB card, so a larger batch is worth trying,
+#   just re-check it still fits when paired with a smaller-VRAM GPU),
+#   LR (default 3e-4 -- scale roughly linearly with BATCH_SIZE, e.g. 4x batch
+#   ~ 4x LR, when changing it, per the standard large-batch linear scaling
+#   rule; this script does no such scaling automatically),
 #   RESUME_FROM_REMOTE (an rclone path to a checkpoint, e.g.
 #   gdrive:chess_bot/checkpoints/run3/best.pt -- fetched and passed to
 #   train.py's --resume-from if set), FILTERED_PGN_REMOTE (default
@@ -86,6 +93,8 @@ TRAIN_MAX_GAMES="${TRAIN_MAX_GAMES:-40000}"
 TEST_MAX_GAMES="${TEST_MAX_GAMES:-5000}"
 EPOCHS="${EPOCHS:-15}"
 PATIENCE="${PATIENCE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-256}"
+LR="${LR:-3e-4}"
 WATCHDOG_HOURS="${WATCHDOG_HOURS:-8}"
 RESUME_FROM_REMOTE="${RESUME_FROM_REMOTE-gdrive:chess_bot/checkpoints/run3/best.pt}"
 FILTERED_PGN_REMOTE="${FILTERED_PGN_REMOTE:-gdrive:chess_bot/filtered_pgn/}"
@@ -230,11 +239,11 @@ if [ -n "$RESUME_FROM_REMOTE" ]; then
     fi
 fi
 
-echo "== training: cap ${EPOCHS} epochs, early stop after ${PATIENCE} non-improving val checks =="
+echo "== training: batch $BATCH_SIZE, lr $LR, cap ${EPOCHS} epochs, early stop after ${PATIENCE} non-improving val checks =="
 python src/train.py \
     --train-dir "${TRAIN_DIRS[@]}" --val-dir "${VAL_DIRS[@]}" \
     --out-dir "checkpoints/$RUN_NAME" \
-    --batch-size 256 --d-model 256 --nhead 8 --num-layers 6 --dim-feedforward 1024 \
+    --batch-size "$BATCH_SIZE" --lr "$LR" --d-model 256 --nhead 8 --num-layers 6 --dim-feedforward 1024 \
     --val-interval 2000 --epochs "$EPOCHS" --patience "$PATIENCE" \
     --drive-remote "gdrive:chess_bot/checkpoints/$RUN_NAME/" \
     "${RESUME_ARGS[@]}"
