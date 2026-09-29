@@ -2,6 +2,12 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-29 — `BATCH_SIZE`/`LR` parametrik hale getirildi (run7 hazırlığı); lokal GPU'da gerçek-batch smoke test
+
+- Aşama: Altyapı — kullanıcının gözlemi: run1'den beri batch-size 256 hiç sorgulanmadan taşınıyor, ama gerçek VRAM kullanımı ölçülünce (24GB'lık bir kartta bile ~2.7GB) devasa bir boşluk olduğu görüldü. `runpod_overnight.sh`'a `BATCH_SIZE` (varsayılan 256) ve `LR` (varsayılan 3e-4) env var'ları eklendi — önceki her koşu aynı davranışı koruyor, ama artık `BATCH_SIZE=1024 LR=1.2e-3` gibi override'larla run7 gibi yeni bir deney başlatılabilir (LR'yi batch'e göre ölçeklemek kullanıcının/ajanın sorumluluğunda, script otomatik yapmıyor — standart "linear scaling rule").
+- Ayrıca kullanıcının merakı üzerine: 16 aylık tensor cache Drive'dan lokale çekildi (`data/`, zaten `.gitignore`'da), checkpoint'ler de (`checkpoints/`, o da `.gitignore`'da) çekildi. Lokal RTX 3050 (4GB) için ayrı bir Python 3.13 + torch 2.6.0+cu124 venv kuruldu (proje `.venv`'i Python 3.14, henüz CUDA wheel'i yok) — gerçek batch-size 256 ve tam GAB mimarisiyle bir hız testi yapıldı: **OOM almadan sığdı**, ama ~1.7 step/sn (pod'ların ~10-17 step/sn'sine göre 6-10x yavaş) — lokal donanım küçük deneyler için uygun, tam ölçekli koşular için değil.
+- Sıradaki adım: run7'yi (`BATCH_SIZE=1024`, LR orantılı ölçeklenmiş) mevcut pod'da (run6'nın indirmekte olduğu 16 aylık veriyi paylaşarak) sıfırdan başlatmak.
+
 ## 2026-09-29 — Scheduler fix DOĞRULANDI (run6 %50.61'e ulaştı), ama rclone timeout'u çok kısaydı
 
 - Aşama: Altyapı + Aşama 2 — bir önceki notun (2026-09-28) scheduler fix'i gerçek bir pod'da test edildi.
