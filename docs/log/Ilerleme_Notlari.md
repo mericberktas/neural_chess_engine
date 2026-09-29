@@ -2,6 +2,13 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-29 — run7 (batch 4096) canlıda çalışırken bulunan `VAL_INTERVAL` ölçekleme sorunu
+
+- Aşama: Altyapı — run7 (`BATCH_SIZE=4096`, L40 pod'unda) çalışırken kullanıcının fark ettiği bir sorun: `--val-interval` her zaman sabit 2000'di, bu run1-6'da (batch 256, ~140625 step/epoch) bir epoch'un ~%1.4'üne denk geliyordu. run7'de (batch 4096, ~8730 step/epoch) aynı sabit 2000 artık bir epoch'un **~%23'üne** denk geliyor — `--patience 4` ile early-stopping artık çok daha az hassas (durmadan önce çok daha fazla yeni veri görmesi gerekiyor), run4-6'daki davranışla karşılaştırılabilir değil.
+- Fix: `VAL_INTERVAL` artık `2000 * 256 / BATCH_SIZE` ile otomatik ölçekleniyor (BATCH_SIZE=256 için hâlâ 2000, değişmiyor — geriye dönük uyumlu). Elle override edilebilir.
+- run7'nin kendisi bu fix olmadan zaten başlatılmıştı — mevcut pod'a dokunulmadı (sağlıklı ilerliyordu, loss düzgün düşüyordu), sadece gelecek koşular için düzeltildi.
+- Sıradaki adım: run7'nin sonucunu (batch 4096 gerçekten yardımcı oluyor mu) izlemek.
+
 ## 2026-09-29 — `BATCH_SIZE`/`LR` parametrik hale getirildi (run7 hazırlığı); lokal GPU'da gerçek-batch smoke test
 
 - Aşama: Altyapı — kullanıcının gözlemi: run1'den beri batch-size 256 hiç sorgulanmadan taşınıyor, ama gerçek VRAM kullanımı ölçülünce (24GB'lık bir kartta bile ~2.7GB) devasa bir boşluk olduğu görüldü. `runpod_overnight.sh`'a `BATCH_SIZE` (varsayılan 256) ve `LR` (varsayılan 3e-4) env var'ları eklendi — önceki her koşu aynı davranışı koruyor, ama artık `BATCH_SIZE=1024 LR=1.2e-3` gibi override'larla run7 gibi yeni bir deney başlatılabilir (LR'yi batch'e göre ölçeklemek kullanıcının/ajanın sorumluluğunda, script otomatik yapmıyor — standart "linear scaling rule").
