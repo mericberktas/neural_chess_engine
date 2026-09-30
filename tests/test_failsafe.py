@@ -50,6 +50,24 @@ def test_legitimate_sacrifice_not_overly_conservative():
     assert hangs_material(board, capture_move) is False
 
 
+def test_move_exposing_a_different_piece_is_flagged():
+    # Regression test for a real incident (live Lichess game, meric_bot,
+    # 2026-09-30): White Rc7 was defended by Rc1 through the empty c6
+    # square. Playing Bc6 attacked a black rook on a8 and looked perfectly
+    # safe for the bishop itself (nothing attacks c6) -- but it blocked the
+    # c-file, leaving Rc7 hanging to the black queen on d8. The old
+    # hangs_material only checked the moved piece's own destination square
+    # and missed this entirely; it must now catch it.
+    board = chess.Board("r2q1rk1/2R2pp1/pp2p2p/1B2P2b/3P2n1/1Q3NP1/PP3PP1/2R3K1 w - - 0 22")
+    blunder = chess.Move.from_uci("b5c6")
+    assert blunder in board.legal_moves
+    assert hangs_material(board, blunder) is True
+
+    move, rejected = pick_safe_move(board, [blunder])
+    assert move == blunder  # only candidate, still returned
+    assert rejected == -1  # but flagged as unsafe (no safe alternative was offered)
+
+
 def test_no_safe_candidate_falls_back_to_top_with_flag():
     # Every candidate hangs material -- refusing to move isn't an option, so
     # pick_safe_move must still return a move (the top one), flagged via -1.
@@ -64,5 +82,6 @@ if __name__ == "__main__":
     test_hanging_queen_flagged_and_filter_falls_back()
     test_ordinary_moves_and_equal_trades_not_flagged()
     test_legitimate_sacrifice_not_overly_conservative()
+    test_move_exposing_a_different_piece_is_flagged()
     test_no_safe_candidate_falls_back_to_top_with_flag()
     print("OK - all failsafe checks passed")
