@@ -1,7 +1,7 @@
 """Cheap one-ply blunder check: does the ANN's proposed move hang a piece for
 free? This is deliberately NOT a full static-exchange-evaluation engine and
 does not catch multi-move tactics or positional errors -- only the single
-most obvious class of blunder (moving a piece to an undefended square, or an
+most obvious class of blunder (a piece left on an undefended square, or an
 under-defended one, where the opponent just takes it for nothing).
 """
 import chess
@@ -16,23 +16,47 @@ PIECE_VALUES = {
 }
 
 
+def hanging_loss_at(board: chess.Board, square: int) -> int:
+    """Material lost if the opponent captures the piece on `square` right
+    now (one-ply SEE-lite): 0 if the square is empty, holds the king, is
+    unattacked, or is defended well enough that the trade nets us nothing
+    (floored at 0 -- this never credits a *winning* trade, only "safe" vs.
+    "costs us N"). Shared by encoding.py's SEE-risk channel and
+    hangs_material below -- same formula, same one-ply scope.
+    """
+    piece = board.piece_at(square)
+    if piece is None or piece.piece_type == chess.KING:
+        return 0
+    attackers = board.attackers(not piece.color, square)
+    if not attackers:
+        return 0
+    piece_value = PIECE_VALUES[piece.piece_type]
+    cheapest_attacker = min(PIECE_VALUES[board.piece_at(sq).piece_type] for sq in attackers)
+    defenders = board.attackers(piece.color, square)
+    if defenders:
+        return max(0, piece_value - cheapest_attacker)
+    return piece_value
+
+
 def hangs_material(board: chess.Board, move: chess.Move) -> bool:
     """True if playing `move` loses material for free (a one-ply SEE-lite).
 
-    Looks only at the piece that just moved, on its destination square:
-    - What did this move capture, if anything (`captured_value`)?
-    - Is the destination now attacked by the opponent? If not, done, safe.
-    - If it's undefended by us, the opponent captures it outright -- net is
-      `captured_value - piece_value`.
-    - If it's defended, the opponent will still grab it with their cheapest
-      attacker when that attacker is worth less than our piece, and we
-      recapture that attacker -- net is
-      `captured_value - piece_value + cheapest_attacker`.
-    Flagged only when that net is negative, i.e. we come out behind. This
-    correctly leaves ordinary trades/recaptures (net ~0) and winning
-    captures (net > 0) unflagged -- only genuine "gave up material and got
-    nothing/not enough back" moves trip it. It stops at one recapture level
-    (no deeper SEE), per the plan's "one-ply is enough" scope.
+    Checks EVERY one of the mover's own pieces after the move, not just the
+    one that moved -- a move can hang a *different* piece by removing its
+    defender (e.g. a bishop blocking its own rook's file), which checking
+    only the destination square misses entirely. Real incident (live
+    Lichess game, 2026-09-30): ...Rc7 was defended by a rook on c1 through
+    the empty c6 square; playing Bc6 (attacking a black rook on a8) looked
+    safe for the bishop itself, but blocked that file and left the rook on
+    c7 hanging to the black queen -- undetected until now.
+
+    net = captured_value (what this move immediately wins, if a capture)
+    minus the worst hanging_loss_at(...) among all of the mover's pieces
+    after the move. Flagged only when net is negative, i.e. we come out
+    behind overall. This still stops at one recapture level per piece (no
+    deeper SEE, no multi-piece follow-up), per the plan's "one-ply is
+    enough" scope -- it now just applies that same one-ply check board-wide
+    instead of to a single square.
     """
     captured_value = _captured_value(board, move)
 
@@ -40,23 +64,11 @@ def hangs_material(board: chess.Board, move: chess.Move) -> bool:
     mover = after.turn
     after.push(move)
 
-    piece = after.piece_at(move.to_square)
-    if piece is None:
-        return False
-
-    opponent = not mover
-    attackers = after.attackers(opponent, move.to_square)
-    if not attackers:
-        return False
-
-    piece_value = PIECE_VALUES[piece.piece_type]
-    cheapest_attacker = min(PIECE_VALUES[after.piece_at(sq).piece_type] for sq in attackers)
-
-    defenders = after.attackers(mover, move.to_square)
-    recapture_value = cheapest_attacker if defenders else 0
-
-    net = captured_value - piece_value + recapture_value
-    return net < 0
+    worst_loss = max(
+        (hanging_loss_at(after, sq) for sq in chess.SQUARES if (p := after.piece_at(sq)) and p.color == mover),
+        default=0,
+    )
+    return captured_value - worst_loss < 0
 
 
 def _captured_value(board: chess.Board, move: chess.Move) -> int:

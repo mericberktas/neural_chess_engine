@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-30 — Canlı kayıp bulundu: `hangs_material` sadece hareket eden taşa bakıyordu
+
+- Aşama: Aşama 4 (Failsafe) — canlı bot ilk gerçek partisinde (meric_bot, Lichess, 2026-09-30) 24. hamlede mat oldu. Kök sebep 22.Bc6 hamlesiydi: kullanıcı bu hamleyi işaret etti ("beyazın 22. hamlesine baksana").
+- **Bulgu:** Beyaz Rc7, Rc1 tarafından c6'daki boş kare üzerinden savunuluyordu. Bc6 (a8'deki siyah kaleye saldırıyor, fil için kendi başına güvenli) aslında bu c-sütunu savunmasını bloke ediyordu — Rc7 siyah vezire karşı savunmasız kaldı. `hangs_material` sadece HAREKET EDEN taşın (fil, c6'da güvenli) hanging olup olmadığına bakıyordu, hamlenin BAŞKA bir taşı (kale) açığa çıkarmasını hiç kontrol etmiyordu — tamamen kör noktaydı.
+- Fix: `failsafe.py`'a `hanging_loss_at(board, square)` eklendi (encoding.py'ın `_see_risk`'iyle birebir aynı formül, oraya taşındı — artık `encoding.py` bunu `failsafe`'den import ediyor, kod tekrarı yok). `hangs_material` artık hamleden sonra hamleyi yapanın **tüm taşlarını** tarayıp en kötü "hanging" kaybı buluyor, sadece hedef kareye değil. Mevcut 4 test de (asılı vezir, eşit takas, meşru feda, sığınma yok) aynı sonucu veriyor — davranış geriye dönük uyumlu, sadece yeni bir kör nokta kapatıldı.
+- Doğrulama: Gerçek pozisyon (`r2q1rk1/2R2pp1/pp2p2p/1B2P2b/3P2n1/1Q3NP1/PP3PP1/2R3K1 w - - 0 22`) ile test edildi — fix öncesi `hangs_material(Bc6)` → `False` (yanlış), fix sonrası → `True` (doğru). `NeuralChessEngine` üzerinden tam uçtan uca test: motor artık bu pozisyonda Bc6 yerine **Bd3**'e (güvenli) oynuyor. Kalıcı regresyon testi eklendi (`test_move_exposing_a_different_piece_is_flagged`). Tüm test suite yeşil.
+- Sıradaki adım: Fix'li kodla canlı bot'u yeniden başlatmak (bot şu an idle, güvenli).
+
 ## 2026-09-30 — run7 diverge etti (batch 4096 + doğrusal-ölçeklenmiş LR); run6 canlı bot'a bağlandı
 
 - Aşama: Aşama 2 + Aşama 6 (Dağıtım).
