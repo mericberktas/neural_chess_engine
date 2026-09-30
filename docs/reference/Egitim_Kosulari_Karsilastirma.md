@@ -1,24 +1,23 @@
-# Eğitim Koşuları Karşılaştırması (run1-run6)
+# Eğitim Koşuları Karşılaştırması (run1-run7)
 
 Şimdiye kadar tamamlanan gerçek GPU eğitim koşularının neyi nasıl farklı yaptığının özeti. Ayrıntılı olay anlatımı (bug'lar, operasyonel arızalar vb.) için [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'ye bakın — bu dosya sadece koşular arası metodolojik farkları ve sonuçları özetler.
 
-run1-run4'te mimari **sabit**: `ChessTransformer`, batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, dropout 0.1, ~4.76M parametre, 18 kanallı girdi. run5, `run5-rich-encoding` branch'inde girdiyi 21 kanala çıkardı (mimari boyutu aynı kaldı) — bkz. [docs/plans/02_Model_Mimarisi_ve_Egitim.md](../plans/02_Model_Mimarisi_ve_Egitim.md). run6, `run6-gab-see` branch'inde 22. kanalı (SEE riski) ve Geometric Attention Bias'ı (~349K ek parametre) ekledi.
+run1-run4'te mimari **sabit**: `ChessTransformer`, batch 256, d_model 256, nhead 8, num_layers 6, dim_feedforward 1024, dropout 0.1, ~4.76M parametre, 18 kanallı girdi. run5, `run5-rich-encoding` branch'inde girdiyi 21 kanala çıkardı (mimari boyutu aynı kaldı) — bkz. [docs/plans/02_Model_Mimarisi_ve_Egitim.md](../plans/02_Model_Mimarisi_ve_Egitim.md). run6, `run6-gab-see` branch'inde 22. kanalı (SEE riski) ve Geometric Attention Bias'ı (~349K ek parametre) ekledi. run7, run6 ile aynı mimari, sadece batch/LR denemesi.
 
 ## Özet tablo
 
-| | run1 | run2 | run3 | run4 | run5 | run6 |
-|---|---|---|---|---|---|---|
-| Veri | 1 ay, 2.3M pozisyon | 4 ay, ~9M pozisyon | 8 ay, 18.0M train pozisyonu | 8 ay (run3 ile aynı) | 8 ay (run3/4 ile aynı) | **16 ay**, Drive harvest'ten |
-| Girdi kanalları | 18 | 18 | 18 | 18 | 21 | **22** (+SEE riski) + GAB |
-| LR programı | Sabit 3e-4 | Sabit 3e-4 | Sabit 3e-4 | `ReduceLROnPlateau` (patience 1, factor 0.5) | Aynı | Aynı — ama bkz. aşağıdaki not |
-| Resume | — | — | — | run3'ten (sadece ağırlık) | — (mimari uyumsuz) | **2 kez zorla** (pod ölümleri) + 1 planlı (scheduler-fix testi için) |
-| Sonuç (best) | step 8000, %32.9 | step 68000, %45.35 | step 64000, %45.08 | step 130000, %50.02 | step 108000, %50.18 | step 88000, **%50.61** ⚠️ |
-| Nasıl bitti | Manuel `terminate_pod` | Gerçek early-stopping | Gerçek early-stopping | Gerçek early-stopping | Self-terminate | Gerçek early-stopping (step 96000) |
-| Drive yolu | `run1/` | `run2/` | `run3/` | `run4/` | `run5/` | `run6/` (⚠️ sadece step 78000/%49.82 kurtarılabilir) |
+| | run1 | run2 | run3 | run4 | run5 | run6 | run7 |
+|---|---|---|---|---|---|---|---|
+| Veri | 1 ay, 2.3M pozisyon | 4 ay, ~9M pozisyon | 8 ay, 18.0M train pozisyonu | 8 ay (run3 ile aynı) | 8 ay (run3/4 ile aynı) | **16 ay**, Drive harvest'ten | 16 ay (run6 ile aynı, tensor cache paylaşıldı) |
+| Girdi kanalları | 18 | 18 | 18 | 18 | 21 | **22** (+SEE riski) + GAB | 22 + GAB (run6 ile aynı) |
+| Batch / LR | 256 / 3e-4 | 256 / 3e-4 | 256 / 3e-4 | 256 / `ReduceLROnPlateau` | 256 / aynı | 256 / aynı | **4096 / 4.8e-3** (16x doğrusal ölçekleme) |
+| Sonuç (best) | step 8000, %32.9 | step 68000, %45.35 | step 64000, %45.08 | step 130000, %50.02 | step 108000, %50.18 | step 88000, %50.61 (kurtarılabilir: step 84000, **%50.06**) | **BAŞARISIZ — diverge etti** |
+| Nasıl bitti | Manuel `terminate_pod` | Gerçek early-stopping | Gerçek early-stopping | Gerçek early-stopping | Self-terminate | Gerçek early-stopping (step 96000) | Gerçek early-stopping (step 10000) ama val_top1 hep ~0 |
+| Drive yolu | `run1/` | `run2/` | `run3/` | `run4/` | `run5/` | `run6/` | `run7/` |
 
-**run6, scheduler resume-fix'i sonrası run4/5'i geçti** (%50.61 > %50.18 > %50.02) — GAB+SEE hipotezi doğrulandı, önceki %48.71 sonucu gerçekten bir bug'dan kaynaklanıyormuş (ayrıntı: [docs/log/Ilerleme_Notlari.md](../log/Ilerleme_Notlari.md)'nin 2026-09-28 notu).
+**run6, scheduler resume-fix'i sonrası run4/5'i geçti** — GAB+SEE hipotezi doğrulandı, önceki %48.71 sonucu gerçekten bir bug'dan kaynaklanıyormuş (ayrıntı: 2026-09-28 notu). Gerçek zirve step 88000/%50.61 idi ama Drive sync'i yavaş ağ + kısa (180s) timeout yüzünden kaybedildi; **step 84000/%50.06 fiilen elimizdeki ve şu an canlı bot'a bağlı model** (2026-09-30, [docs/plans/06_Dagitim.md](../plans/06_Dagitim.md)).
 
-⚠️ **Ama gerçek best'in (step 88000) ağırlıkları kayıp** — bu pod'un ağı yavaştı (~250KB/s), 61MB'lık checkpoint'in Drive sync'i o zamanki 180s timeout'a takıldı (4/7 yeni-best sync'i başarısız oldu), pod silinince o ağırlıklar sonsuza dek gitti. Drive'da fiilen duran son checkpoint step 78000 (%49.82) — yine de eski bug'lı sonucun (%48.71) üzerinde. Timeout 180s→600s'e çıkarıldı (2026-09-29 notu), aynı kayıp bir daha yaşanmamalı.
+**run7 — batch 4096 denemesi diverge etti.** İlk val check'te (step 2000) val_top1 zaten sıfırdı; loss erkenden (step ~450) düşmeye başlamış ama step 2000'e kadar geri fırlayıp bir daha toparlanamamış. Kök sebep muhtemelen warmup'sız 16x doğrusal LR ölçeklemesinin (3e-4→4.8e-3) AdamW için çok agresif olması. Ayrıca pozisyon-başına hız kazancı da sınırlıydı (~4500-4600 poz/sn, run6'nınkiyle aynı seviye) — yani büyük batch'in bu haliyle hem riski var hem net bir kazancı yoktu. Detay: 2026-09-29/30 notları.
 
 ## Koşu koşu neden/ne değişti
 
@@ -45,4 +44,4 @@ Aksiyon önerisi: Bu analiz koda dönüştürülmedi, sadece belgelendi. Sırada
 
 ## Sıradaki adım
 
-run6, son kurtarılabilir checkpoint'ten (step 78000, %49.82) 600s rclone timeout'uyla devam ettirilecek — hedef, step 88000'in %50.61'ini (veya daha iyisini) bu sefer gerçekten Drive'a güvenle kaydetmek.
+run6 (step 84000, %50.06) şu an canlı Lichess bot'una bağlı (`C:\Users\meric\lichess-bot`). Batch büyütme yönü (run7) diverge nedeniyle bırakıldı; devam edilirse warmup mekanizması eklenip çok daha muhafazakar bir LR ile tekrar denenmesi gerekir.
