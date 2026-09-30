@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-09-30 — run7 diverge etti (batch 4096 + doğrusal-ölçeklenmiş LR); run6 canlı bot'a bağlandı
+
+- Aşama: Aşama 2 + Aşama 6 (Dağıtım).
+- **run7 sonucu — başarısız:** `BATCH_SIZE=4096 LR=4.8e-3` ile ilk val check'te (step 2000) val_top1 zaten sıfırdı, loss step 450'de 6.64'e düşmüştü ama step 2000'e gelene kadar 7.87'ye geri fırlamış ve step 10000'e (early-stop) kadar bir daha toparlanamamış. Bu, önceden işaret edilen riskin (AdamW'de warmup'sız 16x doğrusal LR ölçeklemesi agresif) gerçekleştiğini doğruluyor — model erken bir noktada "patlamış" (collapse), diverge etmiş. Batch büyütmenin pozisyon-başına hız kazancı zaten sınırlıydı (run6 ile aşağı yukarı aynı ~4500-4600 poz/sn), bu yüzden warmup ekleyip tekrar denemek yerine bu yönü şimdilik bırakma kararı alındı.
+- **run6 canlı bot'a bağlandı:** `C:\Users\meric\lichess-bot`'taki `homemade.py`'nin `CHECKPOINT_PATH` varsayılanı `run6/best.pt`'ye (step 84000, val_top1 %50.06) güncellendi. `NeuralChessEngine` üzerinden 3 pozisyonla (açılış, orta oyun, asılı-vezir/failsafe testi) smoke test edildi — hepsi legal ve mantıklı hamle, failsafe asılı veziri doğru filtreledi (Qd1-d5 yerine Qd1-d6 seçti). Detay: [docs/plans/06_Dagitim.md](../plans/06_Dagitim.md).
+- Not: lokal rclone token'ı bu oturumda bir kez daha expire oldu (~1 gün sonra) — yeniden OAuth gerekti, bu sefer pod değil doğrudan lokal makine (tünel gerekmedi, loopback direkt erişilebilir çıktı).
+- Sıradaki adım: Canlı bot'u gerçek partilerle izlemek; istenirse `run6-gab-see`'yi `main`'e merge edip dağıtımı branch-bağımsız hale getirmek.
+
 ## 2026-09-29 — run7 (batch 4096) canlıda çalışırken bulunan `VAL_INTERVAL` ölçekleme sorunu
 
 - Aşama: Altyapı — run7 (`BATCH_SIZE=4096`, L40 pod'unda) çalışırken kullanıcının fark ettiği bir sorun: `--val-interval` her zaman sabit 2000'di, bu run1-6'da (batch 256, ~140625 step/epoch) bir epoch'un ~%1.4'üne denk geliyordu. run7'de (batch 4096, ~8730 step/epoch) aynı sabit 2000 artık bir epoch'un **~%23'üne** denk geliyor — `--patience 4` ile early-stopping artık çok daha az hassas (durmadan önce çok daha fazla yeni veri görmesi gerekiyor), run4-6'daki davranışla karşılaştırılabilir değil.
