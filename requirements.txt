@@ -4,3 +4,4 @@ zstandard
 requests
 numpy
 tensorboard
+tqdm

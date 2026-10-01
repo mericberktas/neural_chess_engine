@@ -40,6 +40,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 from model import ChessTransformer
 
@@ -290,7 +291,8 @@ def main() -> None:
     for epoch in range(args.epochs):
         if stop:
             break
-        for boards, moves in train_loader:
+        epoch_bar = tqdm(train_loader, desc=f"epoch {epoch}", unit="step", dynamic_ncols=True)
+        for boards, moves in epoch_bar:
             boards, moves = boards.to(device), moves.to(device)
             from_logits, to_logits = model(boards)
             loss = criterion(from_logits, moves[:, 0]) + criterion(to_logits, moves[:, 1])
@@ -299,9 +301,10 @@ def main() -> None:
             loss.backward()
             optimizer.step()
             step += 1
+            epoch_bar.set_postfix(loss=f"{loss.item():.4f}", step=step, best_top1=f"{best_top1:.4f}")
 
             if step % args.log_interval == 0:
-                print(f"step {step} epoch {epoch} loss {loss.item():.4f} ({time.time() - start:.0f}s)", file=sys.stderr)
+                tqdm.write(f"step {step} epoch {epoch} loss {loss.item():.4f} ({time.time() - start:.0f}s)")
                 writer.add_scalar("train/loss", loss.item(), step)
 
             if step % args.val_interval == 0:
@@ -312,27 +315,25 @@ def main() -> None:
                 writer.add_scalar("val/top1", top1, step)
                 writer.add_scalar("val/top3", top3, step)
                 writer.add_scalar("train/lr", lr_after, step)
-                print(f"step {step} val_top1 {top1:.4f} val_top3 {top3:.4f} lr {lr_after:.2e}", file=sys.stderr)
+                tqdm.write(f"step {step} val_top1 {top1:.4f} val_top3 {top3:.4f} lr {lr_after:.2e}")
                 if lr_after != lr_before:
-                    print(f"  lr decayed {lr_before:.2e} -> {lr_after:.2e} (plateaued {args.lr_patience} checks)", file=sys.stderr)
+                    tqdm.write(f"  lr decayed {lr_before:.2e} -> {lr_after:.2e} (plateaued {args.lr_patience} checks)")
                 if top1 > best_top1:
                     best_top1 = top1
                     checks_without_improvement = 0
                     save_checkpoint(ckpt_path, model, optimizer, lr_scheduler, args, step, top1, top3)
-                    print(f"  new best checkpoint -> {ckpt_path}", file=sys.stderr)
+                    tqdm.write(f"  new best checkpoint -> {ckpt_path}")
                 else:
                     checks_without_improvement += 1
                     if args.patience is not None and checks_without_improvement >= args.patience:
-                        print(
-                            f"  early stopping: no val_top1 improvement in {checks_without_improvement} checks",
-                            file=sys.stderr,
-                        )
+                        tqdm.write(f"  early stopping: no val_top1 improvement in {checks_without_improvement} checks")
                         stop = True
                         break
 
             if args.max_steps is not None and step >= args.max_steps:
                 stop = True
                 break
+        epoch_bar.close()
 
     if best_top1 < 0:  # never hit a val-interval boundary (e.g. max-steps < val-interval)
         top1, top3 = evaluate(model, val_loader, device, args.val_batches)
