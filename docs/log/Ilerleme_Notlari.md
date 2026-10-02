@@ -2,6 +2,14 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-10-02 — v2 veri hazır + doğrulandı; run6/run8 yeni metrikle referans olarak ölçüldü
+
+- Aşama: Aşama 2 — run9 a/b/c öncesi hazırlık. `scripts/encode_v2_local.py` (Python, devam edilebilir, `src/` anlık kopyasından çalışır) ile 16 train ayı + test ayı (2025-04) shard formatı v2'ye yerelde encode edildi (`data/v2/`, 2.1 GB, 36,775,360 pozisyon) ve `verify_shards.py` ile doğrulandı: her pozisyonda oynanan hamle kendi legal maskesinde. Drive'a `tensors/v2/` altına yüklendi (744 shard, `rclone check` ile boyut eşleşmesi doğrulandı).
+- **`build_dataset.py` hatası düzeltildi:** erken `--max-games` kesintisinde `Pool.terminate()` Windows/CPython 3.14'te ya donuyordu (~5 koşuda 1) ya da `ValueError: concurrent send_bytes()` ile son shard flush'ını atlayıp çıktıyı kaybettiriyordu; ayrıca işçi süreçleri `os._exit`'ten sonra yaşayıp çıktı borusunu açık tutuyordu. Şimdi önce shard yazılıp `Done` basılıyor, sonra her işçiye `Process.terminate()`, sonra `os._exit` (`Pool.terminate()` hiç çağrılmıyor). 14 işçiyle 12/12 erken-kesinti koşusu temiz, süreç kalmadı. (Etkilenen tek gerçek durum 5000 oyunla kesilen test ayıydı; train ayları doğal bitiyor.)
+- **Referans ölçümler** (sabit 51200 pozisyonluk eşit aralıklı val örneği, 16 ayın val shard'ları, `scripts/eval_checkpoint.py`, başlık = legal-maskeli top-1/top-3, parantez = maskesiz): run6 `best.pt` (step 84000): **%52.79 / %76.65** (%50.57 / %63.87); run8 `best.pt` (step 70000, 36 ay): **%52.51 / %76.36** (%50.16 / %63.61). Yani run8 (2.25x veri) run6'yı **geçmiyor** (−0.28 puan, gürültü içinde) — eski log'daki "run8 ≈ run6" izlenimi yeni metrikte de doğrulandı. Legal maskeleme tek başına top-1'i ~2.2 puan, top-3'ü ~12.7 puan yukarı çekiyor, bu yüzden run9 kolları yalnızca maskeli metrikle kıyaslanmalı.
+- Test ayı referansları (run6/run8) yerelde CPU'da çok yavaş (~285k pozisyon) — Colab'da GPU ile `eval_checkpoint.py` hücresi olarak çalıştırılacak.
+- Dallar `run9`, `run9b`, `run9c` GitHub'a push edildi. Sıradaki: üç kolu Colab'da koşturmak (kol başına ayrı notebook kopyası, `ARM` değişkeni).
+
 ## 2026-10-02 — run9 altyapısı (A/B/C kolları) yazıldı; val ölçümü düzeltildi
 
 - Aşama: Aşama 2 (Model Mimarisi ve Eğitim) — "daha fazla veri mi, mimari mi" tartışmasının devamı. Run8 (36 ay, aynı mimari) epoch 0'da LR iki kez düşmüş olduğu halde ~%48.5'te plato yaptı → kapasite/mimari yönüne geçildi. Karar: 16 ay (run6'yla aynı veri), üç kol, paralel: **run9a** (kontrol: run6 + katman-başı GAB), **run9b** (a + ikili/bilineer hamle kafası + legal-maskeli joint loss), **run9c** (a + saldırı grafiği attention bias'ı, SEE kanalı kapalı). Branch'ler: `run9` (ortak altyapı + A) → `run9b`, `run9c` (run9'dan). Drive: `checkpoints/run9a|run9b|run9c`, ortak shard'lar `tensors/v2/`.

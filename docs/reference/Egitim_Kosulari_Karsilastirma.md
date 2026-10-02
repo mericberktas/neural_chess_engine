@@ -49,3 +49,12 @@ run6 (step 84000, %50.06) şu an canlı Lichess bot'una bağlı (`C:\Users\meric
 ## Not: val metriği değişti (run9'dan itibaren)
 
 run1-run8'in `val_top1` değerleri, her val check'te sıralı val shard'larının **ilk 20 batch'inden** (5120 pozisyon, ~70 oyun, tek ayın başı) ölçüldü ve hangi aya düştüğü koşudan koşuya değişti — bu yüzden yukarıdaki tablodaki küçük farklar (run4→5→6) birebir kıyaslanabilir değil. run9'dan itibaren val, tüm val shard'larından sabit eşit aralıklı 51200 pozisyonluk bir örnek ve başlık metriği legal-maskeli top-1/3 (maskesiz değer yanında). Eski checkpoint'ler (run6, run8) `scripts/eval_checkpoint.py` ile yeni metrikle yeniden değerlendirilip referans olarak eklenecek. Kollar: run9a = run6 + katman-başı GAB; run9b = a + bilineer hamle kafası + legal-maskeli loss; run9c = a + saldırı grafiği bias'ı (SEE kanalı kapalı) — hepsi 16 ay, run6'yla aynı veri.
+
+### run9 referans satırları (yeni metrik, sabit 51200 pozisyonluk val örneği, 16 ay)
+
+| checkpoint | step | legal-maskeli top-1 / top-3 | maskesiz top-1 / top-3 |
+|---|---|---|---|
+| run6 `best.pt` | 84000 | %52.79 / %76.65 | %50.57 / %63.87 |
+| run8 `best.pt` (36 ay) | 70000 | %52.51 / %76.36 | %50.16 / %63.61 |
+
+run9a/b/c bu iki satırla (ve test ayı sonuçlarıyla) kıyaslanacak.
