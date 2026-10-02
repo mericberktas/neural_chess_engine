@@ -228,34 +228,41 @@ def main() -> None:
     # fixed at the source here instead: terminate() (sends SIGTERM, does not
     # block) and skip join entirely.
     pool = multiprocessing.Pool(args.workers)
-    try:
-        for target, results in pool.imap_unordered(worker, accepted_games(), chunksize=16):
-            if not results:
-                continue
-            writer = writers[target]
-            for board_tensor, move_idx, legal, attacks in results:
-                writer.add(board_tensor, move_idx, legal, attacks)
-                positions_kept += 1
-            games_kept += 1
+    for target, results in pool.imap_unordered(worker, accepted_games(), chunksize=16):
+        if not results:
+            continue
+        writer = writers[target]
+        for board_tensor, move_idx, legal, attacks in results:
+            writer.add(board_tensor, move_idx, legal, attacks)
+            positions_kept += 1
+        games_kept += 1
 
-            if games_kept % 500 == 0:
-                print(f"... {games_seen} games seen, {games_kept} kept, {positions_kept} positions", file=sys.stderr)
+        if games_kept % 500 == 0:
+            print(f"... {games_seen} games seen, {games_kept} kept, {positions_kept} positions", file=sys.stderr)
 
-            if args.max_games is not None and games_kept >= args.max_games:
-                break
-    finally:
-        pool.terminate()
+        if args.max_games is not None and games_kept >= args.max_games:
+            break
 
+    # Write the output FIRST, then tear the workers down -- nothing below
+    # depends on the pool being healthy. Pool.terminate() is deliberately never
+    # called: right after an early --max-games break it races the pool's own
+    # internal threads and either hangs (the known multiprocessing prefetch-
+    # backlog deadlock, seen 2026-09-23) or raises "concurrent send_bytes()
+    # calls are not supported" (CPython 3.14, Windows, seen 2026-10-02 -- which
+    # used to skip the flush and lose the run). Process.terminate() on each
+    # worker doesn't touch those internals. Killing them explicitly matters
+    # because os._exit() does NOT stop them on Windows, and orphaned workers
+    # hold this process's stdout/stderr pipe open, hanging whatever reads it.
     for writer in writers.values():
         writer.flush()
 
     print(f"Done: {games_seen} games seen, {games_kept} kept, {positions_kept} positions written to {args.out_dir}")
-    # Python's normal interpreter shutdown joins any remaining multiprocessing
-    # children (registered via atexit) -- exactly the hang terminate() above
-    # is meant to avoid. os._exit() skips atexit entirely; nothing after
-    # main() needs to run, so this is safe.
     sys.stdout.flush()
     sys.stderr.flush()
+    for child in multiprocessing.active_children():
+        child.terminate()
+    # os._exit() skips atexit, which would otherwise join the pool's threads;
+    # nothing after main() needs to run, so this is safe.
     os._exit(0)
 
 
