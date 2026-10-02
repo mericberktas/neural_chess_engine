@@ -51,7 +51,7 @@ from tqdm import tqdm
 
 from model import ChessTransformer, unpack_bits
 
-MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout", "gab_per_layer")
+MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout", "gab_per_layer", "attack_bias", "see_channel")
 # A best.pt is ~60MB. 180s (real incident, run6, 2026-09-25 fix) assumed
 # nothing slower than ~2.7Mbps and turned out too tight: a later run
 # (2026-09-28) hit a pod with a genuinely slow but working connection
@@ -207,14 +207,15 @@ def evaluate(model: nn.Module, eval_set: tuple, device: torch.device, batch_size
     """top1/top3 over all 4096 from-to pairs (the pre-run9 metric), plus
     legal_top1/legal_top3 over legal pairs only when the eval set has legal
     masks (shard v2)."""
-    boards_all, moves_all, legal_all, _ = eval_set
+    boards_all, moves_all, legal_all, attacks_all = eval_set
     model.eval()
     n = len(moves_all)
     hits = dict(top1=0, top3=0, legal_top1=0, legal_top3=0)
     for start in range(0, n, batch_size):
         boards = boards_all[start:start + batch_size].to(device)
         moves = moves_all[start:start + batch_size].to(device)
-        joint = model.joint_logits(boards).reshape(boards.shape[0], -1)
+        attacks = None if attacks_all is None else attacks_all[start:start + batch_size].to(device)
+        joint = model.joint_logits(boards, attacks).reshape(boards.shape[0], -1)
         true_idx = moves[:, 0] * 64 + moves[:, 1]
         hits["top1"], hits["top3"] = (a + b for a, b in zip((hits["top1"], hits["top3"]), _topk_hits(joint, true_idx)))
         if legal_all is not None:
@@ -318,6 +319,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dim-feedforward", type=int, default=1024)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument(
+        "--attack-bias", action="store_true",
+        help="Add a learned attack/defence-graph bias to every layer's attention logits (needs shard v2 attacks; run9c)",
+    )
+    parser.add_argument(
+        "--see-channel", action=argparse.BooleanOptionalAction, default=True,
+        help="Feed the static-exchange-risk plane (channel 21) to the model; --no-see-channel zeroes it (run9c)",
+    )
+    parser.add_argument(
         "--gab-per-layer", action="store_true",
         help="Give every encoder layer its own GAB bias instead of one shared by all layers (run9)",
     )
@@ -350,6 +359,8 @@ def main() -> None:
 
     train_ds = ShardDataset(args.train_dir)
     val_ds = ShardDataset(args.val_dir)
+    if args.attack_bias and not (train_ds.has_extras and val_ds.has_extras):
+        raise SystemExit("--attack-bias needs shard format v2 (attack bitboards); these shards don't have them")
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, sampler=ShardShuffledSampler(train_ds),
         num_workers=args.num_workers, collate_fn=_identity,
@@ -364,6 +375,7 @@ def main() -> None:
     model = ChessTransformer(
         d_model=args.d_model, nhead=args.nhead, num_layers=args.num_layers,
         dim_feedforward=args.dim_feedforward, dropout=args.dropout, gab_per_layer=args.gab_per_layer,
+        attack_bias=args.attack_bias, see_channel=args.see_channel,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=args.lr_factor, patience=args.lr_patience)
@@ -407,9 +419,10 @@ def main() -> None:
         if stop:
             break
         epoch_bar = tqdm(train_loader, desc=f"epoch {epoch}", unit="step", dynamic_ncols=True)
-        for boards, moves, _legal, _attacks in epoch_bar:
+        for boards, moves, _legal, attacks in epoch_bar:
             boards, moves = boards.to(device), moves.to(device)
-            from_logits, to_logits = model(boards)
+            attacks = None if attacks is None else attacks.to(device)
+            from_logits, to_logits = model(boards, attacks)
             loss = criterion(from_logits, moves[:, 0]) + criterion(to_logits, moves[:, 1])
 
             optimizer.zero_grad()

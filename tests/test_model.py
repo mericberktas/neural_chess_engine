@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from encoding import NUM_CHANNELS, board_to_tensor
+from encoding import NUM_CHANNELS, SEE_CHANNEL, board_to_tensor, position_extras
 from model import ChessTransformer, GeometricAttentionBias, legal_move_mask, select_legal_move, unpack_bits
 
 TINY_KWARGS = dict(d_model=32, nhead=2, num_layers=2, dim_feedforward=64, dropout=0.0)
@@ -194,6 +194,70 @@ def test_joint_logits_is_from_plus_to():
     assert torch.allclose(joint[0, 12, 28], from_logits[0, 12] + to_logits[0, 28])
 
 
+def _startpos_inputs():
+    board = chess.Board()
+    boards = torch.from_numpy(board_to_tensor(board)).unsqueeze(0)
+    attacks = torch.from_numpy(position_extras(board)[1]).unsqueeze(0)
+    return boards, attacks
+
+
+def test_attack_relation_classes_and_bias_term_land_on_the_right_pairs():
+    boards, attacks = _startpos_inputs()
+    piece_idx = ChessTransformer._piece_indices(boards.float())
+    rel, mask = ChessTransformer._attack_relations(piece_idx, attacks)
+    assert mask[0, chess.G1, chess.E2] and mask[0, chess.G1, chess.F3]
+    assert not mask[0, chess.G1, chess.G2]
+    knight_defends_pawn = (1 * 7 + 0) * 2 + 1  # attacker N, target P, same colour
+    knight_covers_empty = (1 * 7 + 6) * 2 + 0  # attacker N, target empty
+    assert rel[0, chess.G1, chess.E2] == knight_defends_pawn
+    assert rel[0, chess.G1, chess.F3] == knight_covers_empty
+
+    model = ChessTransformer(**TINY_KWARGS, attack_bias=True)
+    with torch.no_grad():
+        model.attack_embed.zero_()
+        model.attack_embed[0, 0, knight_defends_pawn, :] = 1.0  # attacker -> target direction
+        model.attack_embed[0, 1, knight_defends_pawn, :] = 2.0  # target <- attacker direction
+    term = model._attack_term(rel, mask, layer_idx=0)
+    assert term.shape == (1, TINY_KWARGS["nhead"], 64, 64)
+    assert (term[0, :, chess.G1, chess.E2] == 1.0).all()  # the knight attends to the pawn it defends
+    assert (term[0, :, chess.E2, chess.G1] == 2.0).all()  # ...and the pawn attends back to its defender
+    assert (term[0, :, chess.G1, chess.F3] == 0.0).all()  # empty-target relation weight left at 0
+    assert (term[0, :, chess.A1, chess.H8] == 0.0).all()  # no attack, no bias
+    assert (model._attack_term(rel, mask, layer_idx=1) == 0.0).all()  # other layers have their own weights
+
+
+def test_attack_bias_starts_as_the_plain_model_then_reacts_to_attacks():
+    boards, attacks = _startpos_inputs()
+    torch.manual_seed(0)
+    plain = ChessTransformer(**TINY_KWARGS, gab_per_layer=True).eval()
+    attack = ChessTransformer(**TINY_KWARGS, gab_per_layer=True, attack_bias=True).eval()
+    attack.load_state_dict(plain.state_dict(), strict=False)  # shared trunk, fresh zero attack_embed
+    with torch.no_grad():
+        assert torch.allclose(plain.joint_logits(boards), attack.joint_logits(boards, attacks), atol=1e-6)
+        attack.attack_embed.normal_()
+        assert not torch.allclose(plain.joint_logits(boards), attack.joint_logits(boards, attacks))
+    try:
+        attack.joint_logits(boards)
+    except ValueError:
+        return
+    raise AssertionError("attack_bias model without attacks should raise")
+
+
+def test_no_see_channel_equals_zeroing_that_plane():
+    board = chess.Board("4k3/8/4p3/3Q4/8/8/8/4K3 w - - 0 1")  # undefended queen attacked by a pawn: SEE plane > 0
+    boards = torch.from_numpy(board_to_tensor(board)).unsqueeze(0)
+    zeroed = boards.clone()
+    zeroed[:, SEE_CHANNEL] = 0
+    assert boards[:, SEE_CHANNEL].any()
+    torch.manual_seed(0)
+    with_see = ChessTransformer(**TINY_KWARGS).eval()
+    without_see = ChessTransformer(**TINY_KWARGS, see_channel=False).eval()
+    without_see.load_state_dict(with_see.state_dict())  # channel_keep is a non-persistent buffer: layout unchanged
+    with torch.no_grad():
+        assert torch.allclose(without_see.joint_logits(boards), with_see.joint_logits(zeroed), atol=1e-6)
+        assert not torch.allclose(with_see.joint_logits(boards), with_see.joint_logits(zeroed))
+
+
 if __name__ == "__main__":
     test_forward_shapes()
     test_legal_move_mask_startpos()
@@ -207,4 +271,7 @@ if __name__ == "__main__":
     test_shared_gab_checkpoint_layout_unchanged()
     test_unpack_bits_inverts_numpy_packbits_little_endian()
     test_joint_logits_is_from_plus_to()
+    test_attack_relation_classes_and_bias_term_land_on_the_right_pairs()
+    test_attack_bias_starts_as_the_plain_model_then_reacts_to_attacks()
+    test_no_see_channel_equals_zeroing_that_plane()
     print("OK - all model checks passed")

@@ -283,7 +283,7 @@ def test_mixed_shard_formats_are_rejected():
 class _FixedScoreModel(nn.Module):
     """Always scores (0,1) highest, then (2,3), then everything else equally."""
 
-    def joint_logits(self, boards):
+    def joint_logits(self, boards, attacks=None):
         joint = torch.zeros(boards.shape[0], 64, 64)
         joint[:, 0, 1] = 10.0
         joint[:, 2, 3] = 5.0
@@ -331,6 +331,29 @@ def test_main_trains_end_to_end_on_v2_shards_and_checkpoint_reloads():
         model.load_state_dict(ckpt["model_state_dict"])
 
 
+def test_attack_bias_and_no_see_channel_train_end_to_end():
+    with tempfile.TemporaryDirectory() as tmp:
+        shard_dir, out_dir = Path(tmp) / "shards", Path(tmp) / "out"
+        _make_v2_shards(shard_dir)
+        argv = [
+            "train.py", "--train-dir", str(shard_dir), "--val-dir", str(shard_dir), "--out-dir", str(out_dir),
+            "--batch-size", "4", "--d-model", "16", "--nhead", "2", "--num-layers", "2", "--dim-feedforward", "32",
+            "--gab-per-layer", "--attack-bias", "--no-see-channel",
+            "--val-interval", "3", "--val-positions", "8", "--max-steps", "6", "--device", "cpu",
+        ]
+        old_argv, sys.argv = sys.argv, argv
+        try:
+            train.main()
+        finally:
+            sys.argv = old_argv
+        ckpt = torch.load(out_dir / "best.pt", map_location="cpu", weights_only=False)
+        assert ckpt["model_args"]["attack_bias"] is True and ckpt["model_args"]["see_channel"] is False
+        assert ckpt["model_state_dict"]["attack_embed"].shape == (2, 2, 84, 2)
+        from engine import load_model
+        model = load_model(str(out_dir / "best.pt"))
+        assert model.attack_bias and not model.see_channel
+
+
 if __name__ == "__main__":
     test_sampler_is_a_valid_permutation_and_never_interleaves_shards()
     test_two_epochs_give_different_orders()
@@ -345,4 +368,5 @@ if __name__ == "__main__":
     test_mixed_shard_formats_are_rejected()
     test_evaluate_legal_masking_changes_the_headline_metric()
     test_main_trains_end_to_end_on_v2_shards_and_checkpoint_reloads()
+    test_attack_bias_and_no_see_channel_train_end_to_end()
     print("OK - all train checks passed")

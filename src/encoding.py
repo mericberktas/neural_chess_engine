@@ -17,6 +17,7 @@ import numpy as np
 from failsafe import hanging_loss_at
 
 NUM_CHANNELS = 22
+SEE_CHANNEL = 21  # index of the static-exchange-risk plane (run6)
 
 _PIECE_ORDER = (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING)
 
@@ -48,7 +49,7 @@ def board_to_tensor(board: chess.Board) -> np.ndarray:
         tensor[20, rank, file] = 1
     for square in board.piece_map():
         rank, file = divmod(square, 8)
-        tensor[21, rank, file] = hanging_loss_at(board, square)
+        tensor[SEE_CHANNEL, rank, file] = hanging_loss_at(board, square)
     return tensor
 
 

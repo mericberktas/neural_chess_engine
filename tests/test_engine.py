@@ -114,10 +114,24 @@ def test_deprioritizes_a_candidate_that_stalemates_the_opponent():
     assert ordered == [safe_move, stalemating_move]
 
 
+def test_attack_bias_model_plays_a_legal_move():
+    # An attack_bias checkpoint needs the attack bitboards at inference time;
+    # the engine must compute and pass them.
+    args = {**TINY_MODEL_ARGS, "attack_bias": True, "see_channel": False, "gab_per_layer": True}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "attack.pt"
+        model = ChessTransformer(**args)
+        torch.save({"model_state_dict": model.state_dict(), "model_args": args}, path)
+        engine = NeuralChessEngine(str(path))
+        board = chess.Board()
+        assert engine.select_move(board) in board.legal_moves
+
+
 if __name__ == "__main__":
     test_tablebase_path_takes_priority_and_matches_direct_probe()
     test_ann_path_used_when_tablebase_unavailable()
     test_failsafe_wiring_falls_back_and_counts_the_trigger()
     test_deprioritizes_a_candidate_that_triggers_threefold_repetition()
     test_deprioritizes_a_candidate_that_stalemates_the_opponent()
+    test_attack_bias_model_plays_a_legal_move()
     print("OK - all engine checks passed")

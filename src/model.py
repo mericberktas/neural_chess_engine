@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from encoding import NUM_CHANNELS
+from encoding import NUM_CHANNELS, SEE_CHANNEL
 
 # Confirmed bug (torch 2.14.0+cpu): nn.TransformerEncoder's fused eval+no_grad
 # ("fast path") kernel silently produces NaN output when given a float
@@ -35,6 +35,8 @@ if hasattr(torch.backends, "mha"):
 
 NUM_SQUARES = 64
 NUM_PIECE_CLASSES = 13  # 0 = empty, 1-6 = white P N B R Q K, 7-12 = black P N B R Q K
+# attack-graph relation classes: attacker type (6) x target (6 piece types + empty = 7) x same-colour (2)
+NUM_ATTACK_RELATIONS = 6 * 7 * 2
 NUM_EXTRA_TOKENS = 8  # side-to-move, castle WK/WQ/BK/BQ, en-passant, last-move-from, last-move-to
 
 
@@ -86,12 +88,22 @@ class ChessTransformer(nn.Module):
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
         gab_per_layer: bool = False,
+        attack_bias: bool = False,
+        see_channel: bool = True,
     ):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
         self.num_layers = num_layers
         self.gab_per_layer = gab_per_layer
+        self.attack_bias = attack_bias
+        self.see_channel = see_channel
+        keep = torch.ones(1, NUM_CHANNELS, 1, 1)
+        keep[:, SEE_CHANNEL] = 0
+        self.register_buffer("channel_keep", keep, persistent=False)  # applied only when see_channel is False
+        if attack_bias:
+            # [layer, 0=attacker->target, 1=target<-attacker, relation, head]; zero-init so training starts from the plain model
+            self.attack_embed = nn.Parameter(torch.zeros(num_layers, 2, NUM_ATTACK_RELATIONS, nhead))
         self.piece_embed = nn.Embedding(NUM_PIECE_CLASSES, d_model)
         self.square_pos_embed = nn.Embedding(NUM_SQUARES, d_model)
         self.extra_type_embed = nn.Embedding(NUM_EXTRA_TOKENS, d_model)
@@ -110,17 +122,55 @@ class ChessTransformer(nn.Module):
         self.from_head = nn.Linear(d_model, 1)
         self.to_head = nn.Linear(d_model, 1)
 
-    def encode(self, boards: torch.Tensor) -> torch.Tensor:
-        """boards: (B, NUM_CHANNELS, 8, 8) -> (B, 64, d_model) board-token features."""
-        boards = boards.float()
+    @staticmethod
+    def _piece_indices(boards: torch.Tensor) -> torch.Tensor:
+        """(B, C, 8, 8) -> (B, 64) long: 0 = empty, 1-6 white P N B R Q K, 7-12 black."""
         batch = boards.shape[0]
-        device = boards.device
-
         piece_planes = boards[:, 0:12]  # (B, 12, 8, 8)
         occupied = piece_planes.sum(dim=1) > 0
         piece_idx = piece_planes.argmax(dim=1) + 1
         piece_idx = torch.where(occupied, piece_idx, torch.zeros_like(piece_idx))
-        piece_idx = piece_idx.reshape(batch, NUM_SQUARES).long()
+        return piece_idx.reshape(batch, NUM_SQUARES).long()
+
+    @staticmethod
+    def _attack_relations(piece_idx: torch.Tensor, attacks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """(B,64) piece indices + (B,64,8) packed attack bitboards ->
+        (rel (B,64,64) long, mask (B,64,64) bool), both indexed [from, to]:
+        mask is "the piece on `from` attacks/defends `to`", rel its class --
+        (attacker type * 7 + target type, 6 = empty target) * 2 + target is
+        occupied by the same colour as the attacker (a defence, not a capture)."""
+        occupied = piece_idx > 0
+        base = (piece_idx - 1).clamp(min=0)
+        piece_type, colour = base % 6, base // 6
+        target_class = torch.where(occupied, piece_type, torch.full_like(piece_type, 6))
+        same = (colour.unsqueeze(2) == colour.unsqueeze(1)) & occupied.unsqueeze(1)
+        rel = (piece_type.unsqueeze(2) * 7 + target_class.unsqueeze(1)) * 2 + same.long()
+        return rel, unpack_bits(attacks.to(piece_idx.device))
+
+    def _attack_term(self, rel: torch.Tensor, mask: torch.Tensor, layer_idx: int) -> torch.Tensor:
+        """(B, nhead, 64, 64) additive attention bias for one layer: the
+        learned weight of the (from -> to) attack relation, plus the reverse
+        weight for the (to -> from) relation so a square can also attend to
+        whatever attacks or defends it."""
+        forward = self.attack_embed[layer_idx, 0][rel]  # (B, 64, 64, H)
+        backward = self.attack_embed[layer_idx, 1][rel.transpose(1, 2)]
+        term = mask.unsqueeze(-1) * forward + mask.transpose(1, 2).unsqueeze(-1) * backward
+        return term.permute(0, 3, 1, 2)
+
+    def encode(self, boards: torch.Tensor, attacks: torch.Tensor | None = None) -> torch.Tensor:
+        """boards: (B, NUM_CHANNELS, 8, 8) -> (B, 64, d_model) board-token features.
+        attacks: (B, 64, 8) uint8 attack bitboards, required iff attack_bias."""
+        boards = boards.float()
+        if not self.see_channel:
+            boards = boards * self.channel_keep
+        batch = boards.shape[0]
+        device = boards.device
+
+        piece_idx = self._piece_indices(boards)
+        if self.attack_bias:
+            if attacks is None:
+                raise ValueError("attack_bias model needs the attacks array (shard format v2)")
+            attack_rel, attack_mask = self._attack_relations(piece_idx, attacks)
 
         square_ids = torch.arange(NUM_SQUARES, device=device)
         mobility = boards[:, 18].reshape(batch, NUM_SQUARES).long()
@@ -178,25 +228,26 @@ class ChessTransformer(nn.Module):
             return full_bias.reshape(batch * self.nhead, total_tokens, total_tokens)
 
         gab_bias = self.gab(boards)  # (B, nhead, 64, 64), or (B, num_layers, nhead, 64, 64) if gab_per_layer
-        shared_mask = None if self.gab_per_layer else layer_mask(gab_bias)
 
         encoded = tokens
         for i, layer in enumerate(self.encoder.layers):
-            mask = shared_mask if shared_mask is not None else layer_mask(gab_bias[:, i])
-            encoded = layer(encoded, src_mask=mask)
+            bias_i = gab_bias[:, i] if self.gab_per_layer else gab_bias
+            if self.attack_bias:
+                bias_i = bias_i + self._attack_term(attack_rel, attack_mask, i)
+            encoded = layer(encoded, src_mask=layer_mask(bias_i))
         if self.encoder.norm is not None:
             encoded = self.encoder.norm(encoded)
         return encoded[:, :NUM_SQUARES]  # (B, 64, d_model)
 
-    def forward(self, boards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, boards: torch.Tensor, attacks: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """boards: (B, NUM_CHANNELS, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
-        board_encoded = self.encode(boards)
+        board_encoded = self.encode(boards, attacks)
         return self.from_head(board_encoded).squeeze(-1), self.to_head(board_encoded).squeeze(-1)
 
-    def joint_logits(self, boards: torch.Tensor) -> torch.Tensor:
+    def joint_logits(self, boards: torch.Tensor, attacks: torch.Tensor | None = None) -> torch.Tensor:
         """(B, 64, 64) score for every (from, to) pair -- the quantity the
         loss/eval/inference rank moves by (additive here: from + to)."""
-        from_logits, to_logits = self(boards)
+        from_logits, to_logits = self(boards, attacks)
         return from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2)
 
 
