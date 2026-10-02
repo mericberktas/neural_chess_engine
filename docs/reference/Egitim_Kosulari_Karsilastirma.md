@@ -45,3 +45,7 @@ Aksiyon önerisi: Bu analiz koda dönüştürülmedi, sadece belgelendi. Sırada
 ## Sıradaki adım
 
 run6 (step 84000, %50.06) şu an canlı Lichess bot'una bağlı (`C:\Users\meric\lichess-bot`). Batch büyütme yönü (run7) diverge nedeniyle bırakıldı; devam edilirse warmup mekanizması eklenip çok daha muhafazakar bir LR ile tekrar denenmesi gerekir.
+
+## Not: val metriği değişti (run9'dan itibaren)
+
+run1-run8'in `val_top1` değerleri, her val check'te sıralı val shard'larının **ilk 20 batch'inden** (5120 pozisyon, ~70 oyun, tek ayın başı) ölçüldü ve hangi aya düştüğü koşudan koşuya değişti — bu yüzden yukarıdaki tablodaki küçük farklar (run4→5→6) birebir kıyaslanabilir değil. run9'dan itibaren val, tüm val shard'larından sabit eşit aralıklı 51200 pozisyonluk bir örnek ve başlık metriği legal-maskeli top-1/3 (maskesiz değer yanında). Eski checkpoint'ler (run6, run8) `scripts/eval_checkpoint.py` ile yeni metrikle yeniden değerlendirilip referans olarak eklenecek. Kollar: run9a = run6 + katman-başı GAB; run9b = a + bilineer hamle kafası + legal-maskeli loss; run9c = a + saldırı grafiği bias'ı (SEE kanalı kapalı) — hepsi 16 ay, run6'yla aynı veri.
