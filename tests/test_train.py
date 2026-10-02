@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import train
 from encoding import NUM_CHANNELS
 from train import (
-    MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, build_eval_set, evaluate, headline, save_checkpoint,
+    MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, build_eval_set, evaluate, headline, legal_cross_entropy,
+    save_checkpoint,
 )
 
 SHARD_SIZES = (5, 7, 3)  # deliberately uneven, and one tiny (size-3) shard
@@ -225,11 +226,14 @@ def _make_v2_shards(shard_dir: Path) -> None:
     shard_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
     for i, size in enumerate(SHARD_SIZES):
+        moves = rng.integers(0, 64, size=(size, 2)).astype(np.int16)
+        legal = rng.integers(0, 256, size=(size, 512), dtype=np.uint8)
+        pair = moves[:, 0].astype(np.int64) * 64 + moves[:, 1]
+        legal[np.arange(size), pair // 8] |= (1 << (pair % 8)).astype(np.uint8)  # the played move is always legal
         np.savez(
             shard_dir / f"shard_{i:05d}.npz",
             boards=rng.integers(0, 2, size=(size, NUM_CHANNELS, 8, 8), dtype=np.uint8),
-            moves=rng.integers(0, 64, size=(size, 2)).astype(np.int16),
-            legal=rng.integers(0, 256, size=(size, 512), dtype=np.uint8),
+            moves=moves, legal=legal,
             attacks=rng.integers(0, 256, size=(size, 64, 8), dtype=np.uint8),
         )
 
@@ -331,6 +335,56 @@ def test_main_trains_end_to_end_on_v2_shards_and_checkpoint_reloads():
         model.load_state_dict(ckpt["model_state_dict"])
 
 
+def test_legal_cross_entropy_matches_softmax_over_the_legal_subset():
+    torch.manual_seed(0)
+    joint = torch.randn(3, 4096, requires_grad=True)
+    legal = torch.zeros(3, 4096, dtype=torch.bool)
+    targets = torch.tensor([5, 100, 4095])
+    for row, extra in enumerate([[7, 9, 11], [1, 2], [3000, 17, 18, 19]]):
+        legal[row, targets[row]] = True
+        legal[row, extra] = True
+    for smoothing in (0.0, 0.1):
+        losses = []
+        for row in range(3):
+            idx = legal[row].nonzero().squeeze(1)
+            logp = torch.log_softmax(joint[row, idx], dim=0)
+            nll = -logp[(idx == targets[row]).nonzero().item()]
+            losses.append((1 - smoothing) * nll + smoothing * (-logp.mean()))
+        expected = torch.stack(losses).mean()
+        got = legal_cross_entropy(joint, targets, legal, smoothing)
+        assert torch.isfinite(got) and torch.allclose(got, expected, atol=1e-5)
+    got.backward()
+    assert torch.isfinite(joint.grad).all()
+    assert (joint.grad[~legal] == 0).all()  # illegal pairs get no gradient
+
+
+def test_pair_head_without_legal_loss_is_rejected_and_the_combination_trains():
+    with tempfile.TemporaryDirectory() as tmp:
+        shard_dir, out_dir = Path(tmp) / "shards", Path(tmp) / "out"
+        _make_v2_shards(shard_dir)
+        base = [
+            "train.py", "--train-dir", str(shard_dir), "--val-dir", str(shard_dir), "--out-dir", str(out_dir),
+            "--batch-size", "4", "--d-model", "16", "--nhead", "2", "--num-layers", "2", "--dim-feedforward", "32",
+            "--val-interval", "3", "--val-positions", "8", "--max-steps", "6", "--device", "cpu",
+        ]
+        old_argv = sys.argv
+        try:
+            sys.argv = base + ["--pair-head"]
+            try:
+                train.parse_args()
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("--pair-head without --legal-loss should exit")
+            sys.argv = base + ["--pair-head", "--legal-loss", "--gab-per-layer"]
+            train.main()
+        finally:
+            sys.argv = old_argv
+        ckpt = torch.load(out_dir / "best.pt", map_location="cpu", weights_only=False)
+        assert ckpt["model_args"]["pair_head"] is True
+        assert "pair_q.weight" in ckpt["model_state_dict"]
+
+
 if __name__ == "__main__":
     test_sampler_is_a_valid_permutation_and_never_interleaves_shards()
     test_two_epochs_give_different_orders()
@@ -345,4 +399,6 @@ if __name__ == "__main__":
     test_mixed_shard_formats_are_rejected()
     test_evaluate_legal_masking_changes_the_headline_metric()
     test_main_trains_end_to_end_on_v2_shards_and_checkpoint_reloads()
+    test_legal_cross_entropy_matches_softmax_over_the_legal_subset()
+    test_pair_head_without_legal_loss_is_rejected_and_the_combination_trains()
     print("OK - all train checks passed")

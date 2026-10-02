@@ -10,7 +10,10 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from encoding import NUM_CHANNELS, board_to_tensor
-from model import ChessTransformer, GeometricAttentionBias, legal_move_mask, select_legal_move, unpack_bits
+from model import (
+    ChessTransformer, GeometricAttentionBias, legal_move_mask, select_legal_move, top_k_legal_moves_from_joint,
+    unpack_bits,
+)
 
 TINY_KWARGS = dict(d_model=32, nhead=2, num_layers=2, dim_feedforward=64, dropout=0.0)
 
@@ -194,6 +197,35 @@ def test_joint_logits_is_from_plus_to():
     assert torch.allclose(joint[0, 12, 28], from_logits[0, 12] + to_logits[0, 28])
 
 
+def test_pair_head_adds_a_term_that_is_not_additive_and_stays_off_by_default():
+    boards = torch.stack([torch.from_numpy(board_to_tensor(chess.Board()))])
+    torch.manual_seed(0)
+    plain = ChessTransformer(**TINY_KWARGS).eval()
+    paired = ChessTransformer(**TINY_KWARGS, pair_head=True).eval()
+    assert not any(k.startswith("pair_") for k in plain.state_dict())  # run6/run9a layouts unchanged
+    paired.load_state_dict(plain.state_dict(), strict=False)  # same trunk/heads, plus fresh pair_q/pair_k
+    with torch.no_grad():
+        additive = plain.joint_logits(boards)
+        joint = paired.joint_logits(boards)
+    assert joint.shape == (1, 64, 64)
+    assert not torch.allclose(joint, additive)  # the bilinear term really contributes
+    # additive part is rank-1 structure (from_i + to_j); the pair term must break it
+    second_diff = joint[0, 0, 0] - joint[0, 0, 1] - joint[0, 1, 0] + joint[0, 1, 1]
+    assert abs(second_diff.item()) > 1e-6
+    assert abs((additive[0, 0, 0] - additive[0, 0, 1] - additive[0, 1, 0] + additive[0, 1, 1]).item()) < 1e-5
+
+
+def test_top_k_from_joint_returns_distinct_legal_moves_with_pair_head():
+    board = chess.Board()
+    model = ChessTransformer(**TINY_KWARGS, pair_head=True).eval()
+    boards = torch.from_numpy(board_to_tensor(board)).unsqueeze(0)
+    with torch.no_grad():
+        joint = model.joint_logits(boards)[0]
+    moves = top_k_legal_moves_from_joint(joint, board, 5)
+    assert len(moves) == 5 and len(set(moves)) == 5
+    assert all(m in board.legal_moves for m in moves)
+
+
 if __name__ == "__main__":
     test_forward_shapes()
     test_legal_move_mask_startpos()
@@ -207,4 +239,6 @@ if __name__ == "__main__":
     test_shared_gab_checkpoint_layout_unchanged()
     test_unpack_bits_inverts_numpy_packbits_little_endian()
     test_joint_logits_is_from_plus_to()
+    test_pair_head_adds_a_term_that_is_not_additive_and_stays_off_by_default()
+    test_top_k_from_joint_returns_distinct_legal_moves_with_pair_head()
     print("OK - all model checks passed")

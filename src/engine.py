@@ -10,7 +10,7 @@ import torch
 
 from encoding import board_to_tensor
 from failsafe import pick_safe_move
-from model import ChessTransformer, top_k_legal_moves
+from model import ChessTransformer, top_k_legal_moves_from_joint
 from tablebase import best_move as tablebase_best_move
 from tablebase import open_tablebase, should_probe
 
@@ -80,5 +80,4 @@ class NeuralChessEngine:
     @torch.no_grad()
     def _policy_candidates(self, board: chess.Board) -> list[chess.Move]:
         tensor = torch.from_numpy(board_to_tensor(board)).float().unsqueeze(0).to(self.device)
-        from_logits, to_logits = self.model(tensor)
-        return top_k_legal_moves(from_logits[0], to_logits[0], board, self.top_k)
+        return top_k_legal_moves_from_joint(self.model.joint_logits(tensor)[0], board, self.top_k)

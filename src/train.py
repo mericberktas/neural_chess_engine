@@ -51,7 +51,7 @@ from tqdm import tqdm
 
 from model import ChessTransformer, unpack_bits
 
-MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout", "gab_per_layer")
+MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout", "gab_per_layer", "pair_head")
 # A best.pt is ~60MB. 180s (real incident, run6, 2026-09-25 fix) assumed
 # nothing slower than ~2.7Mbps and turned out too tight: a later run
 # (2026-09-28) hit a pod with a genuinely slow but working connection
@@ -182,6 +182,22 @@ class ShardShuffledSampler(Sampler):
 
     def __len__(self) -> int:
         return len(self.dataset)
+
+
+def legal_cross_entropy(joint: torch.Tensor, target: torch.Tensor, legal: torch.Tensor, smoothing: float) -> torch.Tensor:
+    """Softmax cross-entropy over the (from, to) pairs that are LEGAL in each
+    position only (illegal pairs get probability 0), with label smoothing
+    spread over the legal set -- torch's built-in label_smoothing would spread
+    mass onto the masked -inf logits and blow up.
+
+    joint: (B, 4096) scores, target: (B,) from*64+to index (must be legal),
+    legal: (B, 4096) bool."""
+    logp = torch.log_softmax(joint.masked_fill(~legal, float("-inf")), dim=1)
+    nll = -logp.gather(1, target.unsqueeze(1)).squeeze(1)
+    if smoothing == 0:
+        return nll.mean()
+    uniform = -logp.masked_fill(~legal, 0.0).sum(dim=1) / legal.sum(dim=1)
+    return ((1 - smoothing) * nll + smoothing * uniform).mean()
 
 
 def build_eval_set(dataset: ShardDataset, num_positions: int, chunk: int = 4096) -> tuple:
@@ -318,6 +334,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dim-feedforward", type=int, default=1024)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument(
+        "--pair-head", action="store_true",
+        help="Score (from, to) pairs with an added bilinear term instead of from + to only (run9b); needs --legal-loss",
+    )
+    parser.add_argument(
+        "--legal-loss", action="store_true",
+        help="Train with softmax cross-entropy over the legal (from, to) pairs only (needs shard v2 legal masks) "
+             "instead of separate from/to cross-entropies (run9b)",
+    )
+    parser.add_argument(
         "--gab-per-layer", action="store_true",
         help="Give every encoder layer its own GAB bias instead of one shared by all layers (run9)",
     )
@@ -341,7 +366,10 @@ def parse_args() -> argparse.Namespace:
              "top-1 improvement. Should be < --patience so a decayed LR gets a chance before early stopping.",
     )
     parser.add_argument("--lr-factor", type=float, default=0.5, help="Multiply the learning rate by this on each --lr-patience plateau")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.pair_head and not args.legal_loss:
+        parser.error("--pair-head only gets gradient through the joint loss; pass --legal-loss too")
+    return args
 
 
 def main() -> None:
@@ -350,6 +378,8 @@ def main() -> None:
 
     train_ds = ShardDataset(args.train_dir)
     val_ds = ShardDataset(args.val_dir)
+    if args.legal_loss and not (train_ds.has_extras and val_ds.has_extras):
+        raise SystemExit("--legal-loss needs shard format v2 (legal masks); these shards don't have them")
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, sampler=ShardShuffledSampler(train_ds),
         num_workers=args.num_workers, collate_fn=_identity,
@@ -364,6 +394,7 @@ def main() -> None:
     model = ChessTransformer(
         d_model=args.d_model, nhead=args.nhead, num_layers=args.num_layers,
         dim_feedforward=args.dim_feedforward, dropout=args.dropout, gab_per_layer=args.gab_per_layer,
+        pair_head=args.pair_head,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=args.lr_factor, patience=args.lr_patience)
@@ -407,10 +438,16 @@ def main() -> None:
         if stop:
             break
         epoch_bar = tqdm(train_loader, desc=f"epoch {epoch}", unit="step", dynamic_ncols=True)
-        for boards, moves, _legal, _attacks in epoch_bar:
+        for boards, moves, legal, _attacks in epoch_bar:
             boards, moves = boards.to(device), moves.to(device)
-            from_logits, to_logits = model(boards)
-            loss = criterion(from_logits, moves[:, 0]) + criterion(to_logits, moves[:, 1])
+            if args.legal_loss:
+                joint = model.joint_logits(boards).reshape(boards.shape[0], -1)
+                loss = legal_cross_entropy(
+                    joint, moves[:, 0] * 64 + moves[:, 1], unpack_bits(legal.to(device)), args.label_smoothing,
+                )
+            else:
+                from_logits, to_logits = model(boards)
+                loss = criterion(from_logits, moves[:, 0]) + criterion(to_logits, moves[:, 1])
 
             optimizer.zero_grad()
             loss.backward()

@@ -15,6 +15,8 @@ With gab_per_layer (run9) each encoder layer gets its own bias instead of all
 sharing one. Two linear heads turn each of the 64 board-token outputs into one from-square
 and one to-square logit.
 """
+import math
+
 import chess
 import numpy as np
 import torch
@@ -35,6 +37,7 @@ if hasattr(torch.backends, "mha"):
 
 NUM_SQUARES = 64
 NUM_PIECE_CLASSES = 13  # 0 = empty, 1-6 = white P N B R Q K, 7-12 = black P N B R Q K
+PAIR_DIM = 64  # width of the pairwise move head's query/key projections (run9b)
 NUM_EXTRA_TOKENS = 8  # side-to-move, castle WK/WQ/BK/BQ, en-passant, last-move-from, last-move-to
 
 
@@ -86,12 +89,14 @@ class ChessTransformer(nn.Module):
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
         gab_per_layer: bool = False,
+        pair_head: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
         self.num_layers = num_layers
         self.gab_per_layer = gab_per_layer
+        self.pair_head = pair_head
         self.piece_embed = nn.Embedding(NUM_PIECE_CLASSES, d_model)
         self.square_pos_embed = nn.Embedding(NUM_SQUARES, d_model)
         self.extra_type_embed = nn.Embedding(NUM_EXTRA_TOKENS, d_model)
@@ -109,6 +114,9 @@ class ChessTransformer(nn.Module):
 
         self.from_head = nn.Linear(d_model, 1)
         self.to_head = nn.Linear(d_model, 1)
+        if pair_head:
+            self.pair_q = nn.Linear(d_model, PAIR_DIM)
+            self.pair_k = nn.Linear(d_model, PAIR_DIM)
 
     def encode(self, boards: torch.Tensor) -> torch.Tensor:
         """boards: (B, NUM_CHANNELS, 8, 8) -> (B, 64, d_model) board-token features."""
@@ -195,9 +203,19 @@ class ChessTransformer(nn.Module):
 
     def joint_logits(self, boards: torch.Tensor) -> torch.Tensor:
         """(B, 64, 64) score for every (from, to) pair -- the quantity the
-        loss/eval/inference rank moves by (additive here: from + to)."""
-        from_logits, to_logits = self(boards)
-        return from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2)
+        loss/eval/inference rank moves by. Additive (from + to) by default;
+        with pair_head a bilinear term q_from . k_to / sqrt(PAIR_DIM) is added
+        so the score can depend on the specific from-to combination, not just
+        on each square separately."""
+        board_encoded = self.encode(boards)
+        from_logits = self.from_head(board_encoded).squeeze(-1)
+        to_logits = self.to_head(board_encoded).squeeze(-1)
+        joint = from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2)
+        if self.pair_head:
+            q = self.pair_q(board_encoded)
+            k = self.pair_k(board_encoded)
+            joint = joint + q @ k.transpose(1, 2) / math.sqrt(PAIR_DIM)
+        return joint
 
 
 # --- Legal-move masking (inference time) ---------------------------------
