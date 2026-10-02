@@ -5,6 +5,8 @@ import io
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from build_dataset import (
     headers_pass_filter,
@@ -72,9 +74,11 @@ def test_process_game_encodes_the_accepted_game_correctly():
     assert target == "train"
     # e4, e5, Nf3 -> 3 positions, skip_plies=0 keeps all of them
     assert len(results) == 3
-    first_board, first_move = results[0]
+    first_board, first_move, first_legal, first_attacks = results[0]
     assert first_board.shape == (NUM_CHANNELS, 8, 8)
     assert first_move == (12, 28)  # e2e4
+    assert first_legal.shape == (512,) and first_legal.dtype == np.uint8
+    assert first_attacks.shape == (64, 8) and first_attacks.dtype == np.uint8
 
 
 def test_process_game_respects_skip_plies_and_clock():

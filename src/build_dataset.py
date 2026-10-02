@@ -38,7 +38,7 @@ import chess.pgn
 import numpy as np
 import zstandard as zstd
 
-from encoding import board_to_tensor, move_to_indices
+from encoding import board_to_tensor, move_to_indices, position_extras
 
 _HEADER_RE = re.compile(r'^\[(\w+)\s+"(.*)"\]\s*$', re.MULTILINE)
 
@@ -121,7 +121,8 @@ def _process_game(item: tuple[str, str, str], skip_plies: int, min_clock_seconds
         if ply > skip_plies:
             clock = node.clock()
             if clock is None or clock >= min_clock_seconds:
-                results.append((board_to_tensor(board), move_to_indices(move)))
+                legal, attacks = position_extras(board)
+                results.append((board_to_tensor(board), move_to_indices(move), legal, attacks))
         board.push(move)
     return target, results
 
@@ -132,12 +133,16 @@ class ShardWriter:
         self.shard_size = shard_size
         self.boards: list[np.ndarray] = []
         self.moves: list[tuple[int, int]] = []
+        self.legal: list[np.ndarray] = []
+        self.attacks: list[np.ndarray] = []
         self.shard_index = 0
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    def add(self, board_tensor: np.ndarray, move_idx: tuple[int, int]) -> None:
+    def add(self, board_tensor: np.ndarray, move_idx: tuple[int, int], legal: np.ndarray, attacks: np.ndarray) -> None:
         self.boards.append(board_tensor)
         self.moves.append(move_idx)
+        self.legal.append(legal)
+        self.attacks.append(attacks)
         if len(self.boards) >= self.shard_size:
             self.flush()
 
@@ -149,10 +154,14 @@ class ShardWriter:
             path,
             boards=np.stack(self.boards),
             moves=np.array(self.moves, dtype=np.int16),
+            legal=np.stack(self.legal),
+            attacks=np.stack(self.attacks),
         )
         self.shard_index += 1
         self.boards.clear()
         self.moves.clear()
+        self.legal.clear()
+        self.attacks.clear()
 
 
 def parse_args() -> argparse.Namespace:
@@ -224,8 +233,8 @@ def main() -> None:
             if not results:
                 continue
             writer = writers[target]
-            for board_tensor, move_idx in results:
-                writer.add(board_tensor, move_idx)
+            for board_tensor, move_idx, legal, attacks in results:
+                writer.add(board_tensor, move_idx, legal, attacks)
                 positions_kept += 1
             games_kept += 1
 

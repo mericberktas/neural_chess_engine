@@ -1,9 +1,16 @@
 """Train the ChessTransformer policy network on build_dataset.py shards.
 
 Reads train/ and val/ subfolders of shard_*.npz files (boards: (N,NUM_CHANNELS,8,8)
-uint8, moves: (N,2) int16 = from_square, to_square). Val is evaluated every
---val-interval steps (not once per epoch, since one epoch over the real
-dataset can be huge) and the checkpoint with the best val top-1 is kept.
+uint8, moves: (N,2) int16 = from_square, to_square; shard format v2 also has
+legal: (N,512) uint8 and attacks: (N,64,8) uint8 -- see encoding.position_extras).
+Val is evaluated every --val-interval steps (not once per epoch, since one epoch
+over the real dataset can be huge) and the checkpoint with the best val top-1 is
+kept. Val runs on a FIXED evenly-strided sample of --val-positions positions
+drawn from every val shard (built once up front, held in RAM) -- not the first
+few batches of the sorted val shards, which was one month's first ~70 games and
+differed from run to run. With v2 shards the headline metric (best-checkpoint,
+LR scheduler, early stopping) is top-1/top-3 over LEGAL moves only, since that
+is what the engine actually plays; the unmasked numbers are printed alongside.
 
 Example (toy CPU smoke test):
     python src/train.py --train-dir data/toy/train --val-dir data/toy/val \\
@@ -42,9 +49,9 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from model import ChessTransformer
+from model import ChessTransformer, unpack_bits
 
-MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout")
+MODEL_ARG_NAMES = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout", "gab_per_layer")
 # A best.pt is ~60MB. 180s (real incident, run6, 2026-09-25 fix) assumed
 # nothing slower than ~2.7Mbps and turned out too tight: a later run
 # (2026-09-28) hit a pod with a genuinely slow but working connection
@@ -75,13 +82,21 @@ class ShardDataset(Dataset):
         if not self.files:
             raise FileNotFoundError(f"no shard_*.npz files in {shard_dirs}")
         lengths = []
+        self.has_extras = None  # shard format v2 (legal + attacks arrays); v1 shards lack them
         for f in self.files:
             with np.load(f) as d:
                 lengths.append(len(d["moves"]))
+                has_extras = "legal" in d.files and "attacks" in d.files
+            if self.has_extras is None:
+                self.has_extras = has_extras
+            elif has_extras != self.has_extras:
+                raise ValueError(f"{f} mixes shard formats with the other shards (v1 without legal/attacks, v2 with)")
         self._offsets = np.cumsum([0] + lengths)
         self._cache_idx = None
         self._cache_boards = None
         self._cache_moves = None
+        self._cache_legal = None
+        self._cache_attacks = None
 
     def __len__(self) -> int:
         return int(self._offsets[-1])
@@ -91,6 +106,9 @@ class ShardDataset(Dataset):
             with np.load(self.files[shard_idx]) as d:
                 self._cache_boards = d["boards"]
                 self._cache_moves = d["moves"]
+                if self.has_extras:
+                    self._cache_legal = d["legal"]
+                    self._cache_attacks = d["attacks"]
             self._cache_idx = shard_idx
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -100,6 +118,46 @@ class ShardDataset(Dataset):
         board = self._cache_boards[local_idx].astype(np.float32)
         move = self._cache_moves[local_idx].astype(np.int64)
         return torch.from_numpy(board), torch.from_numpy(move)
+
+    def __getitems__(self, indices: list[int]) -> tuple:
+        """Whole-batch fetch (DataLoader calls this instead of one __getitem__
+        per sample when it exists -- pair with collate_fn=_identity): numpy
+        fancy-indexes each involved shard's cached arrays once per batch
+        instead of paying Python per-sample overhead 256 times, which was the
+        real bottleneck (~6.5 steps/s regardless of GPU).
+
+        Returns (boards uint8 (B,C,8,8), moves int64 (B,2), legal uint8
+        (B,512) | None, attacks uint8 (B,64,8) | None), in `indices` order;
+        boards stay uint8 (the model casts on-device) so host-to-device
+        copies are 4x smaller."""
+        idx = np.asarray(indices, dtype=np.int64)
+        shard_ids = np.searchsorted(self._offsets, idx, side="right") - 1
+        positions, boards, moves, legal, attacks = [], [], [], [], []
+        for shard_idx in np.unique(shard_ids):
+            sel = np.nonzero(shard_ids == shard_idx)[0]
+            self._load_shard(int(shard_idx))
+            local = idx[sel] - self._offsets[shard_idx]
+            positions.append(sel)
+            boards.append(self._cache_boards[local])
+            moves.append(self._cache_moves[local])
+            if self.has_extras:
+                legal.append(self._cache_legal[local])
+                attacks.append(self._cache_attacks[local])
+        restore = np.argsort(np.concatenate(positions))  # back to the caller's order
+
+        def gather(parts):
+            return torch.from_numpy(np.concatenate(parts)[restore])
+
+        return (
+            gather(boards),
+            gather(moves).long(),
+            gather(legal) if self.has_extras else None,
+            gather(attacks) if self.has_extras else None,
+        )
+
+
+def _identity(batch):
+    return batch  # __getitems__ already returns a finished batch
 
 
 class ShardShuffledSampler(Sampler):
@@ -126,23 +184,66 @@ class ShardShuffledSampler(Sampler):
         return len(self.dataset)
 
 
+def build_eval_set(dataset: ShardDataset, num_positions: int, chunk: int = 4096) -> tuple:
+    """A fixed, evenly-strided sample of `num_positions` positions across the
+    WHOLE dataset (every shard, hence every month and many games), held in RAM
+    as (boards, moves, legal|None, attacks|None) -- same batch layout as
+    ShardDataset.__getitems__. Strided indices are visited in ascending order
+    so each shard is read from disk once."""
+    total = len(dataset)
+    idx = np.unique(np.linspace(0, total - 1, min(num_positions, total)).astype(np.int64))
+    parts = [dataset.__getitems__(idx[i:i + chunk].tolist()) for i in range(0, len(idx), chunk)]
+    return tuple(None if parts[0][k] is None else torch.cat([p[k] for p in parts]) for k in range(4))
+
+
+def _topk_hits(scores: torch.Tensor, true_idx: torch.Tensor) -> tuple[int, int]:
+    top1 = (scores.argmax(dim=1) == true_idx).sum().item()
+    top3 = (scores.topk(3, dim=1).indices == true_idx.unsqueeze(1)).any(dim=1).sum().item()
+    return top1, top3
+
+
 @torch.no_grad()
-def evaluate(model: nn.Module, val_loader: DataLoader, device: torch.device, max_batches: int | None) -> tuple[float, float]:
+def evaluate(model: nn.Module, eval_set: tuple, device: torch.device, batch_size: int = 512) -> dict[str, float]:
+    """top1/top3 over all 4096 from-to pairs (the pre-run9 metric), plus
+    legal_top1/legal_top3 over legal pairs only when the eval set has legal
+    masks (shard v2)."""
+    boards_all, moves_all, legal_all, _ = eval_set
     model.eval()
-    top1_correct = top3_correct = n = 0
-    for i, (boards, moves) in enumerate(val_loader):
-        if max_batches is not None and i >= max_batches:
-            break
-        boards, moves = boards.to(device), moves.to(device)
-        from_logits, to_logits = model(boards)
-        joint = (from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2)).reshape(boards.shape[0], -1)
+    n = len(moves_all)
+    hits = dict(top1=0, top3=0, legal_top1=0, legal_top3=0)
+    for start in range(0, n, batch_size):
+        boards = boards_all[start:start + batch_size].to(device)
+        moves = moves_all[start:start + batch_size].to(device)
+        joint = model.joint_logits(boards).reshape(boards.shape[0], -1)
         true_idx = moves[:, 0] * 64 + moves[:, 1]
-        top1_correct += (joint.argmax(dim=1) == true_idx).sum().item()
-        top3_idx = joint.topk(3, dim=1).indices
-        top3_correct += (top3_idx == true_idx.unsqueeze(1)).any(dim=1).sum().item()
-        n += boards.shape[0]
+        hits["top1"], hits["top3"] = (a + b for a, b in zip((hits["top1"], hits["top3"]), _topk_hits(joint, true_idx)))
+        if legal_all is not None:
+            legal = unpack_bits(legal_all[start:start + batch_size].to(device))
+            masked = joint.masked_fill(~legal, float("-inf"))
+            hits["legal_top1"], hits["legal_top3"] = (
+                a + b for a, b in zip((hits["legal_top1"], hits["legal_top3"]), _topk_hits(masked, true_idx))
+            )
     model.train()
-    return top1_correct / n, top3_correct / n
+    result = {k: v / n for k, v in hits.items()}
+    if legal_all is None:
+        del result["legal_top1"], result["legal_top3"]
+    return result
+
+
+def headline(metrics: dict[str, float]) -> tuple[float, float]:
+    """(top1, top3) that drive best-checkpoint/LR-scheduler/early-stopping:
+    legal-masked when available (what the engine plays), else unmasked."""
+    if "legal_top1" in metrics:
+        return metrics["legal_top1"], metrics["legal_top3"]
+    return metrics["top1"], metrics["top3"]
+
+
+def format_metrics(metrics: dict[str, float]) -> str:
+    top1, top3 = headline(metrics)
+    text = f"val_top1 {top1:.4f} val_top3 {top3:.4f}"
+    if "legal_top1" in metrics:
+        text += f" (unmasked {metrics['top1']:.4f}/{metrics['top3']:.4f})"
+    return text
 
 
 def save_checkpoint(
@@ -206,13 +307,20 @@ def parse_args() -> argparse.Namespace:
         "--patience", type=int, default=None,
         help="Stop early after this many consecutive val checks with no top-1 improvement (unset = disabled, run the full --epochs)",
     )
-    parser.add_argument("--val-batches", type=int, default=20, help="Batches per val evaluation (caps eval time)")
+    parser.add_argument(
+        "--val-positions", type=int, default=51_200,
+        help="Size of the fixed, evenly-strided val sample drawn from every val shard (built once, evaluated each --val-interval)",
+    )
     parser.add_argument("--log-interval", type=int, default=50, help="Log train loss every N steps")
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--nhead", type=int, default=8)
     parser.add_argument("--num-layers", type=int, default=6)
     parser.add_argument("--dim-feedforward", type=int, default=1024)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--gab-per-layer", action="store_true",
+        help="Give every encoder layer its own GAB bias instead of one shared by all layers (run9)",
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument(
         "--drive-remote", default=None,
@@ -242,13 +350,20 @@ def main() -> None:
 
     train_ds = ShardDataset(args.train_dir)
     val_ds = ShardDataset(args.val_dir)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=ShardShuffledSampler(train_ds), num_workers=args.num_workers)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    print(f"train positions: {len(train_ds)}, val positions: {len(val_ds)}", file=sys.stderr)
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, sampler=ShardShuffledSampler(train_ds),
+        num_workers=args.num_workers, collate_fn=_identity,
+    )
+    eval_set = build_eval_set(val_ds, args.val_positions)
+    print(
+        f"train positions: {len(train_ds)}, val positions: {len(val_ds)} "
+        f"(fixed eval sample: {len(eval_set[1])}, legal masks: {eval_set[2] is not None})",
+        file=sys.stderr,
+    )
 
     model = ChessTransformer(
         d_model=args.d_model, nhead=args.nhead, num_layers=args.num_layers,
-        dim_feedforward=args.dim_feedforward, dropout=args.dropout,
+        dim_feedforward=args.dim_feedforward, dropout=args.dropout, gab_per_layer=args.gab_per_layer,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=args.lr_factor, patience=args.lr_patience)
@@ -292,7 +407,7 @@ def main() -> None:
         if stop:
             break
         epoch_bar = tqdm(train_loader, desc=f"epoch {epoch}", unit="step", dynamic_ncols=True)
-        for boards, moves in epoch_bar:
+        for boards, moves, _legal, _attacks in epoch_bar:
             boards, moves = boards.to(device), moves.to(device)
             from_logits, to_logits = model(boards)
             loss = criterion(from_logits, moves[:, 0]) + criterion(to_logits, moves[:, 1])
@@ -308,14 +423,15 @@ def main() -> None:
                 writer.add_scalar("train/loss", loss.item(), step)
 
             if step % args.val_interval == 0:
-                top1, top3 = evaluate(model, val_loader, device, args.val_batches)
+                metrics = evaluate(model, eval_set, device)
+                top1, top3 = headline(metrics)
                 lr_before = optimizer.param_groups[0]["lr"]
                 lr_scheduler.step(top1)
                 lr_after = optimizer.param_groups[0]["lr"]
                 writer.add_scalar("val/top1", top1, step)
                 writer.add_scalar("val/top3", top3, step)
                 writer.add_scalar("train/lr", lr_after, step)
-                tqdm.write(f"step {step} val_top1 {top1:.4f} val_top3 {top3:.4f} lr {lr_after:.2e}")
+                tqdm.write(f"step {step} {format_metrics(metrics)} lr {lr_after:.2e}")
                 if lr_after != lr_before:
                     tqdm.write(f"  lr decayed {lr_before:.2e} -> {lr_after:.2e} (plateaued {args.lr_patience} checks)")
                 if top1 > best_top1:
@@ -336,10 +452,11 @@ def main() -> None:
         epoch_bar.close()
 
     if best_top1 < 0:  # never hit a val-interval boundary (e.g. max-steps < val-interval)
-        top1, top3 = evaluate(model, val_loader, device, args.val_batches)
+        metrics = evaluate(model, eval_set, device)
+        top1, top3 = headline(metrics)
         best_top1 = top1
         save_checkpoint(ckpt_path, model, optimizer, lr_scheduler, args, step, top1, top3)
-        print(f"final val_top1 {top1:.4f} val_top3 {top3:.4f}, checkpoint -> {ckpt_path}", file=sys.stderr)
+        print(f"final {format_metrics(metrics)}, checkpoint -> {ckpt_path}", file=sys.stderr)
 
     writer.close()
     print(f"done: {step} steps, best val_top1 {best_top1:.4f}, checkpoint at {ckpt_path}")

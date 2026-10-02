@@ -11,7 +11,8 @@ square positional embedding for their target square). A Geometric Attention
 Bias (GAB, run6) reads the raw board tensor and produces a dynamic per-head
 64x64 additive bias fed into every encoder layer's self-attention (via
 nn.TransformerEncoder's mask= argument), on top of the fixed token embeddings.
-Two linear heads turn each of the 64 board-token outputs into one from-square
+With gab_per_layer (run9) each encoder layer gets its own bias instead of all
+sharing one. Two linear heads turn each of the 64 board-token outputs into one from-square
 and one to-square logit.
 """
 import chess
@@ -46,21 +47,34 @@ class GeometricAttentionBias(nn.Module):
     defaults) instead of ~4M+ for a per-head-dense version.
     """
 
-    def __init__(self, in_channels: int, nhead: int, d_compress: int = 128, d_templates: int = 32):
+    def __init__(self, in_channels: int, nhead: int, d_compress: int = 128, d_templates: int = 32, num_outputs: int = 1):
         super().__init__()
         self.nhead = nhead
         self.d_templates = d_templates
+        self.num_outputs = num_outputs  # independent biases (one per encoder layer when > 1); compress_fc/template_bank stay shared
         self.compress_fc = nn.Linear(in_channels * NUM_SQUARES, d_compress)
-        self.head_proj = nn.Linear(d_compress, nhead * d_templates)
+        self.head_proj = nn.Linear(d_compress, num_outputs * nhead * d_templates)
         self.template_bank = nn.Linear(d_templates, NUM_SQUARES * NUM_SQUARES)
 
     def forward(self, boards: torch.Tensor) -> torch.Tensor:
-        """boards: (B, in_channels, 8, 8) float -> (B, nhead, 64, 64)."""
+        """boards: (B, in_channels, 8, 8) float -> (B, nhead, 64, 64), or
+        (B, num_outputs, nhead, 64, 64) when num_outputs > 1."""
         batch = boards.shape[0]
         z = F.relu(self.compress_fc(boards.reshape(batch, -1)))
-        w = self.head_proj(z).reshape(batch, self.nhead, self.d_templates)
-        bias = self.template_bank(w)  # (B, nhead, 4096), template_bank shared across heads
-        return bias.reshape(batch, self.nhead, NUM_SQUARES, NUM_SQUARES)
+        w = self.head_proj(z).reshape(batch, self.num_outputs * self.nhead, self.d_templates)
+        bias = self.template_bank(w)  # (B, num_outputs*nhead, 4096), template_bank shared across heads/outputs
+        if self.num_outputs == 1:
+            return bias.reshape(batch, self.nhead, NUM_SQUARES, NUM_SQUARES)
+        return bias.reshape(batch, self.num_outputs, self.nhead, NUM_SQUARES, NUM_SQUARES)
+
+
+def unpack_bits(packed: torch.Tensor) -> torch.Tensor:
+    """(..., K) uint8 -> (..., K*8) bool, little-endian bit order within each
+    byte -- the inverse of np.packbits(..., bitorder="little"), which is how
+    encoding.position_extras stores its legal mask and attack bitboards."""
+    shifts = torch.arange(8, device=packed.device, dtype=torch.uint8)
+    bits = (packed.unsqueeze(-1) >> shifts) & 1
+    return bits.reshape(*packed.shape[:-1], -1).bool()
 
 
 class ChessTransformer(nn.Module):
@@ -71,16 +85,21 @@ class ChessTransformer(nn.Module):
         num_layers: int = 6,
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
+        gab_per_layer: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
+        self.num_layers = num_layers
+        self.gab_per_layer = gab_per_layer
         self.piece_embed = nn.Embedding(NUM_PIECE_CLASSES, d_model)
         self.square_pos_embed = nn.Embedding(NUM_SQUARES, d_model)
         self.extra_type_embed = nn.Embedding(NUM_EXTRA_TOKENS, d_model)
         self.flag_embed = nn.Embedding(2, d_model)
         self.mobility_embed = nn.Embedding(2, d_model)
-        self.gab = GeometricAttentionBias(in_channels=NUM_CHANNELS, nhead=nhead)
+        self.gab = GeometricAttentionBias(
+            in_channels=NUM_CHANNELS, nhead=nhead, num_outputs=num_layers if gab_per_layer else 1,
+        )
 
         layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
@@ -91,8 +110,8 @@ class ChessTransformer(nn.Module):
         self.from_head = nn.Linear(d_model, 1)
         self.to_head = nn.Linear(d_model, 1)
 
-    def forward(self, boards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """boards: (B, NUM_CHANNELS, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
+    def encode(self, boards: torch.Tensor) -> torch.Tensor:
+        """boards: (B, NUM_CHANNELS, 8, 8) -> (B, 64, d_model) board-token features."""
         boards = boards.float()
         batch = boards.shape[0]
         device = boards.device
@@ -153,17 +172,32 @@ class ChessTransformer(nn.Module):
         tokens = torch.cat([board_tok, extra_tok], dim=1)  # (B, 72, d_model)
         total_tokens = NUM_SQUARES + NUM_EXTRA_TOKENS
 
-        bias64 = self.gab(boards)  # (B, nhead, 64, 64)
-        full_bias = boards.new_zeros(batch, self.nhead, total_tokens, total_tokens)
-        full_bias[:, :, :NUM_SQUARES, :NUM_SQUARES] = bias64  # extra tokens get no bias
-        mask = full_bias.reshape(batch * self.nhead, total_tokens, total_tokens)
+        def layer_mask(bias64: torch.Tensor) -> torch.Tensor:
+            full_bias = boards.new_zeros(batch, self.nhead, total_tokens, total_tokens)
+            full_bias[:, :, :NUM_SQUARES, :NUM_SQUARES] = bias64  # extra tokens get no bias
+            return full_bias.reshape(batch * self.nhead, total_tokens, total_tokens)
 
-        encoded = self.encoder(tokens, mask=mask)
-        board_encoded = encoded[:, :NUM_SQUARES]  # (B, 64, d_model)
+        gab_bias = self.gab(boards)  # (B, nhead, 64, 64), or (B, num_layers, nhead, 64, 64) if gab_per_layer
+        shared_mask = None if self.gab_per_layer else layer_mask(gab_bias)
 
-        from_logits = self.from_head(board_encoded).squeeze(-1)
-        to_logits = self.to_head(board_encoded).squeeze(-1)
-        return from_logits, to_logits
+        encoded = tokens
+        for i, layer in enumerate(self.encoder.layers):
+            mask = shared_mask if shared_mask is not None else layer_mask(gab_bias[:, i])
+            encoded = layer(encoded, src_mask=mask)
+        if self.encoder.norm is not None:
+            encoded = self.encoder.norm(encoded)
+        return encoded[:, :NUM_SQUARES]  # (B, 64, d_model)
+
+    def forward(self, boards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """boards: (B, NUM_CHANNELS, 8, 8) -> (from_logits, to_logits), each (B, 64)."""
+        board_encoded = self.encode(boards)
+        return self.from_head(board_encoded).squeeze(-1), self.to_head(board_encoded).squeeze(-1)
+
+    def joint_logits(self, boards: torch.Tensor) -> torch.Tensor:
+        """(B, 64, 64) score for every (from, to) pair -- the quantity the
+        loss/eval/inference rank moves by (additive here: from + to)."""
+        from_logits, to_logits = self(boards)
+        return from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2)
 
 
 # --- Legal-move masking (inference time) ---------------------------------
@@ -177,12 +211,16 @@ def legal_move_mask(board: chess.Board) -> np.ndarray:
     return mask
 
 
+def mask_joint_logits(joint: torch.Tensor, mask: np.ndarray) -> torch.Tensor:
+    """(64, 64) joint score matrix with illegal (from, to) pairs set to -inf."""
+    mask_t = torch.from_numpy(mask).to(joint.device)
+    return joint.masked_fill(~mask_t, float("-inf"))
+
+
 def mask_move_logits(from_logits: torch.Tensor, to_logits: torch.Tensor, mask: np.ndarray) -> torch.Tensor:
     """(64,) + (64,) -> (64, 64) joint from/to score matrix with illegal
     (from, to) pairs set to -inf, ready for argmax/sampling/topk."""
-    joint = from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2)
-    mask_t = torch.from_numpy(mask).to(joint.device)
-    return joint.masked_fill(~mask_t, float("-inf"))
+    return mask_joint_logits(from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2), mask)
 
 
 def _prefer_queen(candidates: list[chess.Move]) -> chess.Move:
@@ -199,7 +237,13 @@ def top_k_legal_moves(from_logits: torch.Tensor, to_logits: torch.Tensor, board:
     first. Promotion ties collapse to one entry each (see _prefer_queen) so
     the ranking reflects distinct (from, to) squares, not raw score-matrix
     cells."""
-    joint = mask_move_logits(from_logits, to_logits, legal_move_mask(board))
+    return top_k_legal_moves_from_joint(from_logits.unsqueeze(-1) + to_logits.unsqueeze(-2), board, k)
+
+
+def top_k_legal_moves_from_joint(joint: torch.Tensor, board: chess.Board, k: int) -> list[chess.Move]:
+    """Same as top_k_legal_moves, for a model that scores (from, to) pairs
+    directly: joint is its un-masked (64, 64) score matrix."""
+    joint = mask_joint_logits(joint, legal_move_mask(board))
     order = torch.argsort(joint.flatten(), descending=True)
     moves: list[chess.Move] = []
     seen_squares: set[tuple[int, int]] = set()

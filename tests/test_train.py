@@ -14,7 +14,9 @@ import torch.optim as optim
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import train
 from encoding import NUM_CHANNELS
-from train import MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, save_checkpoint
+from train import (
+    MODEL_ARG_NAMES, ShardDataset, ShardShuffledSampler, build_eval_set, evaluate, headline, save_checkpoint,
+)
 
 SHARD_SIZES = (5, 7, 3)  # deliberately uneven, and one tiny (size-3) shard
 
@@ -218,6 +220,117 @@ def test_scheduler_best_is_seeded_for_a_checkpoint_without_scheduler_state():
     assert scheduler.num_bad_epochs == 1
 
 
+def _make_v2_shards(shard_dir: Path) -> None:
+    """Random but fixed-seed shard-format-v2 shards (boards, moves, legal, attacks)."""
+    shard_dir.mkdir(parents=True)
+    rng = np.random.default_rng(0)
+    for i, size in enumerate(SHARD_SIZES):
+        np.savez(
+            shard_dir / f"shard_{i:05d}.npz",
+            boards=rng.integers(0, 2, size=(size, NUM_CHANNELS, 8, 8), dtype=np.uint8),
+            moves=rng.integers(0, 64, size=(size, 2)).astype(np.int16),
+            legal=rng.integers(0, 256, size=(size, 512), dtype=np.uint8),
+            attacks=rng.integers(0, 256, size=(size, 64, 8), dtype=np.uint8),
+        )
+
+
+def test_getitems_matches_per_sample_getitem_in_callers_order():
+    with tempfile.TemporaryDirectory() as tmp:
+        shard_dir = Path(tmp) / "shards"
+        _make_v2_shards(shard_dir)
+        dataset = ShardDataset(shard_dir)
+        assert dataset.has_extras
+        indices = [14, 0, 7, 3, 12, 5, 7]  # all three shards, unsorted, one repeat
+        boards, moves, legal, attacks = dataset.__getitems__(indices)
+        assert boards.dtype == torch.uint8 and moves.dtype == torch.int64
+        for row, idx in enumerate(indices):
+            expected_board, expected_move = dataset[idx]
+            assert torch.equal(boards[row].float(), expected_board)
+            assert torch.equal(moves[row], expected_move)
+        # legal/attacks rows come from the right shard + local position
+        shard_files = sorted(shard_dir.glob("shard_*.npz"))
+        with np.load(shard_files[2]) as d:  # global idx 14 = shard 2 (offset 12), local 2
+            assert np.array_equal(legal[0].numpy(), d["legal"][2])
+            assert np.array_equal(attacks[0].numpy(), d["attacks"][2])
+
+
+def test_build_eval_set_is_a_strided_sample_across_every_shard():
+    with tempfile.TemporaryDirectory() as tmp:
+        shard_dir = Path(tmp) / "shards"
+        _make_v2_shards(shard_dir)
+        dataset = ShardDataset(shard_dir)
+        eval_set = build_eval_set(dataset, num_positions=5)
+        expected_idx = [0, 3, 7, 10, 14]  # linspace(0, 14, 5): hits shard 0 (0-4), 1 (5-11) and 2 (12-14)
+        expected = dataset.__getitems__(expected_idx)
+        for got, want in zip(eval_set, expected):
+            assert torch.equal(got, want)
+        # asking for more than exist just returns everything once
+        assert len(build_eval_set(dataset, num_positions=10_000)[1]) == len(dataset)
+
+
+def test_mixed_shard_formats_are_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        v1, v2 = Path(tmp) / "v1", Path(tmp) / "v2"
+        _make_shards(v1)
+        _make_v2_shards(v2)
+        try:
+            ShardDataset([v1, v2])
+        except ValueError:
+            return
+        raise AssertionError("mixing v1 and v2 shards should raise")
+
+
+class _FixedScoreModel(nn.Module):
+    """Always scores (0,1) highest, then (2,3), then everything else equally."""
+
+    def joint_logits(self, boards):
+        joint = torch.zeros(boards.shape[0], 64, 64)
+        joint[:, 0, 1] = 10.0
+        joint[:, 2, 3] = 5.0
+        return joint
+
+
+def test_evaluate_legal_masking_changes_the_headline_metric():
+    n = 4
+    legal = np.zeros((n, 64 * 64), dtype=bool)
+    legal[:, 2 * 64 + 3] = True  # only the true move and one other are legal; (0,1) is NOT
+    legal[:, 4 * 64 + 5] = True
+    eval_set = (
+        torch.zeros(n, NUM_CHANNELS, 8, 8, dtype=torch.uint8),
+        torch.tensor([[2, 3]] * n),
+        torch.from_numpy(np.packbits(legal, axis=1, bitorder="little")),
+        None,
+    )
+    metrics = evaluate(_FixedScoreModel(), eval_set, torch.device("cpu"))
+    assert metrics["top1"] == 0.0  # unmasked argmax is the illegal (0,1)
+    assert metrics["legal_top1"] == 1.0  # masked argmax is the true move
+    assert headline(metrics) == (1.0, 1.0)
+    # no legal masks (shard v1) -> unmasked numbers only, headline falls back to them
+    metrics_v1 = evaluate(_FixedScoreModel(), (eval_set[0], eval_set[1], None, None), torch.device("cpu"))
+    assert "legal_top1" not in metrics_v1 and headline(metrics_v1) == (0.0, 1.0)
+
+
+def test_main_trains_end_to_end_on_v2_shards_and_checkpoint_reloads():
+    with tempfile.TemporaryDirectory() as tmp:
+        shard_dir, out_dir = Path(tmp) / "shards", Path(tmp) / "out"
+        _make_v2_shards(shard_dir)
+        argv = [
+            "train.py", "--train-dir", str(shard_dir), "--val-dir", str(shard_dir), "--out-dir", str(out_dir),
+            "--batch-size", "4", "--d-model", "16", "--nhead", "2", "--num-layers", "2", "--dim-feedforward", "32",
+            "--gab-per-layer", "--val-interval", "3", "--val-positions", "8", "--max-steps", "6", "--device", "cpu",
+        ]
+        old_argv, sys.argv = sys.argv, argv
+        try:
+            train.main()
+        finally:
+            sys.argv = old_argv
+        ckpt = torch.load(out_dir / "best.pt", map_location="cpu", weights_only=False)
+        assert ckpt["model_args"]["gab_per_layer"] is True
+        from model import ChessTransformer
+        model = ChessTransformer(**ckpt["model_args"])
+        model.load_state_dict(ckpt["model_state_dict"])
+
+
 if __name__ == "__main__":
     test_sampler_is_a_valid_permutation_and_never_interleaves_shards()
     test_two_epochs_give_different_orders()
@@ -227,4 +340,9 @@ if __name__ == "__main__":
     test_resuming_restores_model_and_optimizer_state()
     test_resumed_scheduler_state_survives_a_second_construction()
     test_scheduler_best_is_seeded_for_a_checkpoint_without_scheduler_state()
+    test_getitems_matches_per_sample_getitem_in_callers_order()
+    test_build_eval_set_is_a_strided_sample_across_every_shard()
+    test_mixed_shard_formats_are_rejected()
+    test_evaluate_legal_masking_changes_the_headline_metric()
+    test_main_trains_end_to_end_on_v2_shards_and_checkpoint_reloads()
     print("OK - all train checks passed")

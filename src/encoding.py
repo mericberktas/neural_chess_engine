@@ -52,6 +52,25 @@ def board_to_tensor(board: chess.Board) -> np.ndarray:
     return tensor
 
 
+def position_extras(board: chess.Board) -> tuple[np.ndarray, np.ndarray]:
+    """Per-position side data stored next to board_to_tensor's output (shard
+    format v2), kept as packed bits so a position costs ~1KB instead of the
+    ~20KB of the equivalent dense arrays.
+
+    legal:   (512,) uint8 -- bit (from*64 + to) set iff some legal move uses
+             that from/to pair (promotion piece not distinguished, same as
+             model.legal_move_mask); little-endian bit order within each byte.
+    attacks: (64, 8) uint8 -- row s is board.attacks_mask(s) as 8 little-endian
+             bytes: bit (8*byte + k) set iff the piece on s attacks/defends
+             that square (blockers respected; all zero for an empty s).
+    """
+    legal = np.zeros(64 * 64, dtype=bool)
+    for move in board.legal_moves:
+        legal[move.from_square * 64 + move.to_square] = True
+    attacks = np.array([board.attacks_mask(sq) for sq in chess.SQUARES], dtype="<u8").view(np.uint8).reshape(64, 8)
+    return np.packbits(legal, bitorder="little"), attacks
+
+
 def move_to_indices(move: chess.Move) -> tuple[int, int]:
     """(from_square, to_square), each 0-63 — matches the two 64-way policy heads."""
     return move.from_square, move.to_square

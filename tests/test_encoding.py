@@ -3,9 +3,10 @@ import sys
 from pathlib import Path
 
 import chess
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from encoding import NUM_CHANNELS, board_to_tensor, move_to_indices
+from encoding import NUM_CHANNELS, board_to_tensor, move_to_indices, position_extras
 
 
 def test_startpos_planes():
@@ -86,6 +87,19 @@ def test_see_risk_plane():
     assert t[21, rank, file] == 0
 
 
+def test_position_extras_legal_mask_and_attacks():
+    legal_packed, attacks = position_extras(chess.Board())
+    legal = np.unpackbits(legal_packed, bitorder="little").astype(bool)
+    assert legal.sum() == 20  # 16 pawn moves + 4 knight moves at the start
+    assert legal[chess.E2 * 64 + chess.E4] and legal[chess.G1 * 64 + chess.F3]
+    assert not legal[chess.E2 * 64 + chess.E5]
+
+    bits = np.unpackbits(attacks, axis=1, bitorder="little")  # (64, 64): [from, to]
+    assert bits[chess.G1].nonzero()[0].tolist() == sorted([chess.E2, chess.F3, chess.H3])  # incl. defended own pawn e2
+    assert bits[chess.E4].sum() == 0  # empty square attacks nothing
+    assert bits[chess.A1].nonzero()[0].tolist() == sorted([chess.A2, chess.B1])  # blocked rook: defends, no more
+
+
 if __name__ == "__main__":
     test_startpos_planes()
     test_en_passant_plane()
@@ -93,4 +107,5 @@ if __name__ == "__main__":
     test_mobility_plane_startpos()
     test_last_move_planes_empty_at_start_and_set_after_a_move()
     test_see_risk_plane()
+    test_position_extras_legal_mask_and_attacks()
     print("OK - all encoding checks passed")

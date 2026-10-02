@@ -4,12 +4,13 @@ import tempfile
 from pathlib import Path
 
 import chess
+import numpy as np
 import torch
 import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from encoding import NUM_CHANNELS, board_to_tensor
-from model import ChessTransformer, GeometricAttentionBias, legal_move_mask, select_legal_move
+from model import ChessTransformer, GeometricAttentionBias, legal_move_mask, select_legal_move, unpack_bits
 
 TINY_KWARGS = dict(d_model=32, nhead=2, num_layers=2, dim_feedforward=64, dropout=0.0)
 
@@ -132,6 +133,67 @@ def test_encoder_mask_survives_eval_and_no_grad():
     assert not torch.allclose(out_eval_no_grad, out_no_mask)  # mask must actually change the output
 
 
+def test_per_layer_gab_matches_shared_gab_when_layers_are_identical():
+    # Per-layer GAB with every layer's head_proj slice set equal to the shared
+    # model's single head_proj must reproduce the shared model exactly --
+    # pins down that the (B, num_layers, nhead, 64, 64) layout/indexing feeds
+    # each encoder layer the right slice, and that the manual layer loop
+    # matches the shared-mask path.
+    boards = torch.stack([torch.from_numpy(board_to_tensor(chess.Board())) for _ in range(3)])
+    torch.manual_seed(0)
+    shared = ChessTransformer(**TINY_KWARGS).eval()
+    per_layer = ChessTransformer(**TINY_KWARGS, gab_per_layer=True).eval()
+    state = {k: v for k, v in shared.state_dict().items() if not k.startswith("gab.head_proj")}
+    per_layer.load_state_dict(state, strict=False)
+    layers = TINY_KWARGS["num_layers"]
+    with torch.no_grad():
+        per_layer.gab.head_proj.weight.copy_(shared.gab.head_proj.weight.repeat(layers, 1))
+        per_layer.gab.head_proj.bias.copy_(shared.gab.head_proj.bias.repeat(layers))
+        expected = shared(boards)
+        got = per_layer(boards)
+    assert torch.allclose(expected[0], got[0], atol=1e-5)
+    assert torch.allclose(expected[1], got[1], atol=1e-5)
+
+
+def test_per_layer_gab_layers_actually_differ():
+    # Fresh (independently initialised) per-layer biases must give each layer
+    # a different mask, not the same one repeated.
+    gab = GeometricAttentionBias(in_channels=NUM_CHANNELS, nhead=2, d_compress=8, d_templates=4, num_outputs=3)
+    boards = torch.randn(2, NUM_CHANNELS, 8, 8)
+    bias = gab(boards)
+    assert bias.shape == (2, 3, 2, 64, 64)
+    assert not torch.allclose(bias[:, 0], bias[:, 1])
+
+
+def test_shared_gab_checkpoint_layout_unchanged():
+    # Default (gab_per_layer=False) must keep run6's exact parameter shapes,
+    # or every pre-run9 checkpoint stops loading.
+    model = ChessTransformer(**TINY_KWARGS)
+    assert model.gab.head_proj.out_features == TINY_KWARGS["nhead"] * 32
+    assert ChessTransformer(**TINY_KWARGS, gab_per_layer=True).gab.head_proj.out_features == (
+        TINY_KWARGS["num_layers"] * TINY_KWARGS["nhead"] * 32
+    )
+
+
+def test_unpack_bits_inverts_numpy_packbits_little_endian():
+    rng = np.random.default_rng(0)
+    bits = rng.integers(0, 2, size=(5, 64), dtype=np.uint8).astype(bool)
+    packed = np.packbits(bits, axis=1, bitorder="little")
+    got = unpack_bits(torch.from_numpy(packed))
+    assert got.shape == (5, 64) and got.dtype == torch.bool
+    assert (got.numpy() == bits).all()
+
+
+def test_joint_logits_is_from_plus_to():
+    model = ChessTransformer(**TINY_KWARGS).eval()
+    boards = torch.stack([torch.from_numpy(board_to_tensor(chess.Board()))])
+    with torch.no_grad():
+        from_logits, to_logits = model(boards)
+        joint = model.joint_logits(boards)
+    assert joint.shape == (1, 64, 64)
+    assert torch.allclose(joint[0, 12, 28], from_logits[0, 12] + to_logits[0, 28])
+
+
 if __name__ == "__main__":
     test_forward_shapes()
     test_legal_move_mask_startpos()
@@ -140,4 +202,9 @@ if __name__ == "__main__":
     test_gab_output_shape()
     test_gab_bias_is_dynamic()
     test_encoder_mask_survives_eval_and_no_grad()
+    test_per_layer_gab_matches_shared_gab_when_layers_are_identical()
+    test_per_layer_gab_layers_actually_differ()
+    test_shared_gab_checkpoint_layout_unchanged()
+    test_unpack_bits_inverts_numpy_packbits_little_endian()
+    test_joint_logits_is_from_plus_to()
     print("OK - all model checks passed")
