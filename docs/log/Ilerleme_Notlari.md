@@ -2,6 +2,13 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-10-03 — run9c bitti: saldırı grafiği bias'ı + SEE'siz A'nın altında kaldı; run9 sonucu B
+
+- Aşama: Aşama 2 — run9 a/b/c karşılaştırması tamamlandı. Test ayı (2025-04, 286,156 pozisyon, legal-maskeli): run6 %52.29 / %76.34; run9a %53.21 / %77.20; run9b %54.01 / %82.01; **run9c %52.52 / %76.52** (best step 80000, maskesiz %50.39 / %63.42). C, A'nın −0.69 (top-1) altında, B'nin −1.49; run6'ya göre +0.23 (gürültü).
+- Okuma: saldırı/savunma grafiği attention bias'ı + SEE kanalının kapatılması, katman-başı GAB'lı kontrolün (A) üstüne bir şey eklemedi, hafifçe geride kaldı. İki değişiklik aynı kolda olduğu için hangisinin zarar verdiği ayrışmıyor (SEE'nin çıkarılması mı, saldırı bias'ı mı). Aynı LR aşamasının sonunda C val'i A'nın ~0.25 altındaydı (3.75e-5 aşaması: A %53.32 @96k, C %53.03 @82k, B %54.18 @92k); C her LR seviyesinde A'dan ~10k adım önce platoya oturdu ama daha yüksek bir seviyeye değil. Not: erken adımlardaki "C A'nın önünde" izlenimi (64k'da +1.6) LR decay zamanlamasından geliyordu, aynı aşamada kıyaslanınca fark ~+0.4'e inip sonra tersine döndü.
+- **run9 sonucu:** B (bilineer hamle kafası + legal-maskeli joint loss) tek net kazanç; A'ya göre +0.80 top-1 / +4.81 top-3, her LR aşamasında ~+1 puan. Katman-başı GAB'ın tek başına etkisi ve B'nin kazancının bilineer kafa / legal loss arasında nasıl paylaşıldığı henüz ayrıştırılmadı.
+- Sıradaki aday deneyler: (1) ayrıştırma: A + sadece legal loss (kafa toplamsal kalır); (2) SEE'nin değeri: A + `--no-see-channel` (saldırı bias'ı yok); (3) B'yi 36 ayla (veri sınaması); (4) B + 7-ply geçmiş; (5) Stockfish tabanlı ACPL ölçümü (yeni bağımlılık/kapsam kararı).
+
 ## 2026-10-03 — run9a ve run9b bitti: bilineer hamle kafası + legal-maskeli loss belirgin kazanç; veri açlığı belirtisi yok
 
 - Aşama: Aşama 2 — run9 a/b/c karşılaştırması (A ve B Colab'da koştu, C sırada). Test ayı (2025-04, 286,156 pozisyon, `eval_checkpoint.py`, başlık = legal-maskeli) sonuçları:

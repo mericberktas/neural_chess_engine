@@ -67,6 +67,6 @@ run9a/b/c bu iki satırla (ve test ayı sonuçlarıyla) kıyaslanacak.
 | run8 (36 ay) | 70000 | %51.98 | %76.02 |
 | run9a (run6 + katman-başı GAB) | 128000 | %53.21 | %77.20 |
 | run9b (a + bilineer kafa + legal loss) | 96000 | %54.01 | %82.01 |
-| run9c (a + saldırı grafiği bias'ı, SEE kapalı) | — | (bekleniyor) | (bekleniyor) |
+| run9c (a + saldırı grafiği bias'ı, SEE kapalı) | 80000 | %52.52 | %76.52 |
 
 run9b'nin kazancı (+0.80 top-1 / +4.81 top-3 vs a) kısmen legal-maskeli loss'un eğitim hedefiyle metriğin örtüşmesinden; bilineer kafa ile legal loss'un ayrı katkısı ayrıştırılmadı.
