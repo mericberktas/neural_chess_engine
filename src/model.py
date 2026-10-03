@@ -147,15 +147,34 @@ class ChessTransformer(nn.Module):
         rel = (piece_type.unsqueeze(2) * 7 + target_class.unsqueeze(1)) * 2 + same.long()
         return rel, unpack_bits(attacks.to(piece_idx.device))
 
-    def _attack_term(self, rel: torch.Tensor, mask: torch.Tensor, layer_idx: int) -> torch.Tensor:
+    @staticmethod
+    def _attack_pairs(rel: torch.Tensor, mask: torch.Tensor) -> tuple:
+        """Index form of the attack graph, computed ONCE per forward (the
+        nonzero() is a GPU sync, so not once per layer). Only ~2.5% of the
+        4096 (from, to) pairs are real attacks, so everything downstream looks
+        up and scatters just those N entries instead of all B*64*64 -- the dense
+        form (gather over every pair, then mask) cost ~5x more on CPU and
+        brought run9c's first Colab steps to ~1.7 s/step (backward of a huge
+        gather into an 84-row table).
+
+        Returns (batch_idx, row_idx, col_idx, relation, batch_size) where the
+        index triple lists each attack at (b, from, to) followed by the same
+        attacks mirrored at (b, to, from) -- the "reverse direction" slots."""
+        b, i, j = mask.nonzero(as_tuple=True)
+        relation = rel[b, i, j]
+        index = (torch.cat([b, b]), torch.cat([i, j]), torch.cat([j, i]))
+        return (*index, relation, mask.shape[0])
+
+    def _attack_term(self, pairs: tuple, layer_idx: int) -> torch.Tensor:
         """(B, nhead, 64, 64) additive attention bias for one layer: the
-        learned weight of the (from -> to) attack relation, plus the reverse
-        weight for the (to -> from) relation so a square can also attend to
-        whatever attacks or defends it."""
-        forward = self.attack_embed[layer_idx, 0][rel]  # (B, 64, 64, H)
-        backward = self.attack_embed[layer_idx, 1][rel.transpose(1, 2)]
-        term = mask.unsqueeze(-1) * forward + mask.transpose(1, 2).unsqueeze(-1) * backward
-        return term.permute(0, 3, 1, 2)
+        learned weight of the (from -> to) attack relation at (from, to), plus
+        the reverse weight of the same relation at (to, from) so a square can
+        also attend to whatever attacks or defends it. Both go into one
+        accumulating scatter (a pair attacked in both directions sums them)."""
+        b, i, j, relation, batch = pairs
+        values = torch.cat([self.attack_embed[layer_idx, 0][relation], self.attack_embed[layer_idx, 1][relation]])
+        term = self.attack_embed.new_zeros(batch, NUM_SQUARES, NUM_SQUARES, self.nhead)
+        return term.index_put((b, i, j), values, accumulate=True).permute(0, 3, 1, 2)
 
     def encode(self, boards: torch.Tensor, attacks: torch.Tensor | None = None) -> torch.Tensor:
         """boards: (B, NUM_CHANNELS, 8, 8) -> (B, 64, d_model) board-token features.
@@ -170,7 +189,7 @@ class ChessTransformer(nn.Module):
         if self.attack_bias:
             if attacks is None:
                 raise ValueError("attack_bias model needs the attacks array (shard format v2)")
-            attack_rel, attack_mask = self._attack_relations(piece_idx, attacks)
+            attack_pairs = self._attack_pairs(*self._attack_relations(piece_idx, attacks))
 
         square_ids = torch.arange(NUM_SQUARES, device=device)
         mobility = boards[:, 18].reshape(batch, NUM_SQUARES).long()
@@ -233,7 +252,7 @@ class ChessTransformer(nn.Module):
         for i, layer in enumerate(self.encoder.layers):
             bias_i = gab_bias[:, i] if self.gab_per_layer else gab_bias
             if self.attack_bias:
-                bias_i = bias_i + self._attack_term(attack_rel, attack_mask, i)
+                bias_i = bias_i + self._attack_term(attack_pairs, i)
             encoded = layer(encoded, src_mask=layer_mask(bias_i))
         if self.encoder.norm is not None:
             encoded = self.encoder.norm(encoded)

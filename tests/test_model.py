@@ -217,13 +217,14 @@ def test_attack_relation_classes_and_bias_term_land_on_the_right_pairs():
         model.attack_embed.zero_()
         model.attack_embed[0, 0, knight_defends_pawn, :] = 1.0  # attacker -> target direction
         model.attack_embed[0, 1, knight_defends_pawn, :] = 2.0  # target <- attacker direction
-    term = model._attack_term(rel, mask, layer_idx=0)
+    pairs = ChessTransformer._attack_pairs(rel, mask)
+    term = model._attack_term(pairs, layer_idx=0)
     assert term.shape == (1, TINY_KWARGS["nhead"], 64, 64)
     assert (term[0, :, chess.G1, chess.E2] == 1.0).all()  # the knight attends to the pawn it defends
     assert (term[0, :, chess.E2, chess.G1] == 2.0).all()  # ...and the pawn attends back to its defender
     assert (term[0, :, chess.G1, chess.F3] == 0.0).all()  # empty-target relation weight left at 0
     assert (term[0, :, chess.A1, chess.H8] == 0.0).all()  # no attack, no bias
-    assert (model._attack_term(rel, mask, layer_idx=1) == 0.0).all()  # other layers have their own weights
+    assert (model._attack_term(pairs, layer_idx=1) == 0.0).all()  # other layers have their own weights
 
 
 def test_attack_bias_starts_as_the_plain_model_then_reacts_to_attacks():
@@ -258,6 +259,24 @@ def test_no_see_channel_equals_zeroing_that_plane():
         assert not torch.allclose(with_see.joint_logits(boards), with_see.joint_logits(zeroed))
 
 
+def test_sparse_attack_term_equals_the_dense_definition():
+    # The scatter-based _attack_term must equal the straightforward dense
+    # definition: weight(from->to) where from attacks to, plus weight(reverse)
+    # at the transposed position, summed when both directions attack.
+    board = chess.Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+    boards = torch.from_numpy(board_to_tensor(board)).unsqueeze(0)
+    attacks = torch.from_numpy(position_extras(board)[1]).unsqueeze(0)
+    model = ChessTransformer(**TINY_KWARGS, attack_bias=True)
+    with torch.no_grad():
+        model.attack_embed.normal_()
+    rel, mask = ChessTransformer._attack_relations(ChessTransformer._piece_indices(boards.float()), attacks)
+    for layer in range(TINY_KWARGS["num_layers"]):
+        fwd = model.attack_embed[layer, 0][rel]
+        bwd = model.attack_embed[layer, 1][rel.transpose(1, 2)]
+        dense = (mask.unsqueeze(-1) * fwd + mask.transpose(1, 2).unsqueeze(-1) * bwd).permute(0, 3, 1, 2)
+        assert torch.allclose(model._attack_term(ChessTransformer._attack_pairs(rel, mask), layer), dense, atol=1e-6)
+
+
 if __name__ == "__main__":
     test_forward_shapes()
     test_legal_move_mask_startpos()
@@ -274,4 +293,5 @@ if __name__ == "__main__":
     test_attack_relation_classes_and_bias_term_land_on_the_right_pairs()
     test_attack_bias_starts_as_the_plain_model_then_reacts_to_attacks()
     test_no_see_channel_equals_zeroing_that_plane()
+    test_sparse_attack_term_equals_the_dense_definition()
     print("OK - all model checks passed")
