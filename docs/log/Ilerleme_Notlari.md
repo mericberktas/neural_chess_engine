@@ -2,6 +2,20 @@
 
 Her ajan/oturum, bir iş birimini bitirdikten sonra buraya kısa bir not düşer. Kural ve format için [CLAUDE.md](../../CLAUDE.md) dosyasına bak. Yeni notlar **en üste** eklenir (en yeni en üstte).
 
+## 2026-10-03 — run9a ve run9b bitti: bilineer hamle kafası + legal-maskeli loss belirgin kazanç; veri açlığı belirtisi yok
+
+- Aşama: Aşama 2 — run9 a/b/c karşılaştırması (A ve B Colab'da koştu, C sırada). Test ayı (2025-04, 286,156 pozisyon, `eval_checkpoint.py`, başlık = legal-maskeli) sonuçları:
+
+| checkpoint | best step | top-1 | top-3 | maskesiz top-1 |
+|---|---|---|---|---|
+| run6 (kurtarılan best.pt) | 84000 | %52.29 | %76.34 | %50.09 |
+| run8 (36 ay) | 70000 | %51.98 | %76.02 | %49.67 |
+| **run9a** (kontrol: run6 + katman-başı GAB) | 128000 | **%53.21** | %77.20 | %50.98 |
+| **run9b** (a + bilineer kafa + legal loss) | 96000 | **%54.01** | **%82.01** | %5.46 (anlamsız) |
+
+- Okuma: (1) **B − A = +0.80 top-1, +4.81 top-3** (B daha az adımla: early-stop 104k'da, best 96k). Aynı pozisyonlarda eşleştirilmiş fark, ~0.3 gürültü eşiğinin üstünde; tek tohum. Top-3 sıçraması legal-maskeli loss'un olasılık kütlesini doğrudan legal hamlelere yığmasıyla uyumlu — kısmen eğitim hedefinin metrik/motor davranışıyla örtüşmesinden geliyor, bilineer kafa ve legal loss'un ayrı katkısı henüz ayrıştırılmadı. (2) **A − run6 = +0.92 top-1** ama run6 referansı kurtarılabilen 84k checkpoint'i (gerçek en iyisi 88k kayıptı, eski metrikte ~+0.5 daha iyiydi) ve A daha uzun koştu (128k adım), yani katman-başı GAB'ın tek başına anlamlı bir katkısı kanıtlanmış değil. (3) **run8 − run6 = −0.31** (gürültü): 2.25x veri eski mimaride kazanç vermedi. B bir epoch'un (139,676 adım) %74'ünde early-stop oldu → durduran şey verinin bitmesi değil plato; veri açlığı belirtisi yok. Sınama önerisi: C bittikten sonra B'yi 36 ayla koşturup B-16 ay ile aynı adımda kıyaslamak. (4) Val→test düşüşü iki kolda da ~0.4-0.5 puan (en iyi checkpoint'in val üzerinden seçilmesinin iyimserliği), kollar arası fark korunuyor.
+- Sıradaki: run9c (saldırı grafiği bias'ı) Colab'da koşacak; sonra B+C birleşimi (run10) kararı. Ayrıca not: ham Stockfish/ACPL ölçümü ve Maia-1 "≥2000" test seti ile dış kıyas konuşuldu, henüz yapılmadı (yeni bağımlılık/kapsam kararı kullanıcıda).
+
 ## 2026-10-02 — v2 veri hazır + doğrulandı; run6/run8 yeni metrikle referans olarak ölçüldü
 
 - Aşama: Aşama 2 — run9 a/b/c öncesi hazırlık. `scripts/encode_v2_local.py` (Python, devam edilebilir, `src/` anlık kopyasından çalışır) ile 16 train ayı + test ayı (2025-04) shard formatı v2'ye yerelde encode edildi (`data/v2/`, 2.1 GB, 36,775,360 pozisyon) ve `verify_shards.py` ile doğrulandı: her pozisyonda oynanan hamle kendi legal maskesinde. Drive'a `tensors/v2/` altına yüklendi (744 shard, `rclone check` ile boyut eşleşmesi doğrulandı).

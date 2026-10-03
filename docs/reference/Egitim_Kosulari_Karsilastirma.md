@@ -58,3 +58,15 @@ run1-run8'in `val_top1` değerleri, her val check'te sıralı val shard'larını
 | run8 `best.pt` (36 ay) | 70000 | %52.51 / %76.36 | %50.16 / %63.61 |
 
 run9a/b/c bu iki satırla (ve test ayı sonuçlarıyla) kıyaslanacak.
+
+### run9 test ayı sonuçları (2025-04, 286,156 pozisyon, legal-maskeli top-1 / top-3)
+
+| checkpoint | best step | top-1 | top-3 |
+|---|---|---|---|
+| run6 | 84000 | %52.29 | %76.34 |
+| run8 (36 ay) | 70000 | %51.98 | %76.02 |
+| run9a (run6 + katman-başı GAB) | 128000 | %53.21 | %77.20 |
+| run9b (a + bilineer kafa + legal loss) | 96000 | %54.01 | %82.01 |
+| run9c (a + saldırı grafiği bias'ı, SEE kapalı) | — | (bekleniyor) | (bekleniyor) |
+
+run9b'nin kazancı (+0.80 top-1 / +4.81 top-3 vs a) kısmen legal-maskeli loss'un eğitim hedefiyle metriğin örtüşmesinden; bilineer kafa ile legal loss'un ayrı katkısı ayrıştırılmadı.
